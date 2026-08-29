@@ -1,0 +1,24 @@
+{
+  "name": "driftlock",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Local-first, agent-agnostic observability for AI coding sessions",
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "tsc --build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.7.2"
+  },
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=20",
+    "bun": ">=1.1"
+  },
+  "trustedDependencies": ["@biomejs/biome"]
+}

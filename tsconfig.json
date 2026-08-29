@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/adapters/claude-code" },
+    { "path": "packages/adapters/cursor" },
+    { "path": "packages/adapters/codex" },
+    { "path": "packages/analyzers" },
+    { "path": "packages/daemon" },
+    { "path": "packages/cli" },
+    { "path": "packages/hook" }
+  ]
+}
