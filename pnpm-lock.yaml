@@ -63,6 +63,9 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@driftlock/adapter-codex':
+        specifier: workspace:*
+        version: link:../adapters/codex
       '@types/bun':
         specifier: ^1.1.14
         version: 1.4.0

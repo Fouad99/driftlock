@@ -1,2 +1,3 @@
-// Codex CLI adapter — built in M1 (architecture doc §4.3).
-export {};
+export { CodexAdapter } from './adapter.ts';
+export { parseApplyPatch } from './apply-patch.ts';
+export { inferExitCode, isTestCommand } from './test-detect.ts';

@@ -4,6 +4,6 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "references": [{ "path": "../../packages/core" }],
+  "references": [{ "path": "../../packages/core" }, { "path": "../adapters/codex" }],
   "include": ["src"]
 }

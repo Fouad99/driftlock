@@ -12,6 +12,7 @@
     "@driftlock/core": "workspace:*"
   },
   "devDependencies": {
+    "@driftlock/adapter-codex": "workspace:*",
     "@types/bun": "^1.1.14",
     "typescript": "^5.7.2"
   }
