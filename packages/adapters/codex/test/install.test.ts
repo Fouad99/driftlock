@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { buildCodexHooksFile, installCodexHooks } from '../src/install.ts';
 
 let repoRoot: string;
@@ -13,12 +13,20 @@ beforeEach(() => {
   // installCodexHooks refuses to run unless `driftlock-hook` resolves to an
   // absolute path via `Bun.which` — put a fake one on PATH so these tests
   // exercise the real resolution path instead of a build-only helper.
+  // `delimiter` (not a hardcoded `:`) since Windows uses `;`; on Windows,
+  // `Bun.which` also needs a recognized executable extension to find it.
   fakeBinDir = mkdtempSync(join(tmpdir(), 'driftlock-codex-fakebin-'));
-  const fakeBin = join(fakeBinDir, 'driftlock-hook');
-  writeFileSync(fakeBin, '#!/bin/sh\nexit 0\n');
+  const fakeBin = join(
+    fakeBinDir,
+    process.platform === 'win32' ? 'driftlock-hook.cmd' : 'driftlock-hook',
+  );
+  writeFileSync(
+    fakeBin,
+    process.platform === 'win32' ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n',
+  );
   chmodSync(fakeBin, 0o755);
   originalPath = process.env.PATH;
-  process.env.PATH = `${fakeBinDir}:${process.env.PATH ?? ''}`;
+  process.env.PATH = `${fakeBinDir}${delimiter}${process.env.PATH ?? ''}`;
 });
 
 afterEach(() => {

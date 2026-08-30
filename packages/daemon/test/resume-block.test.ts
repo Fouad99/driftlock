@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { writeFencedBlock, writeResumeBriefToRepo } from '../src/resume-block.ts';
 
 let repoRoot: string;
@@ -68,7 +68,7 @@ describe('writeFencedBlock', () => {
 describe('writeResumeBriefToRepo', () => {
   test('creates CLAUDE.md and AGENTS.md if absent', () => {
     const results = writeResumeBriefToRepo(repoRoot, 'the brief');
-    expect(results.map((r) => r.path.split('/').pop())).toEqual(['CLAUDE.md', 'AGENTS.md']);
+    expect(results.map((r) => basename(r.path))).toEqual(['CLAUDE.md', 'AGENTS.md']);
     expect(results.every((r) => r.created)).toBe(true);
     expect(readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf-8')).toContain('the brief');
     expect(readFileSync(join(repoRoot, 'AGENTS.md'), 'utf-8')).toContain('the brief');

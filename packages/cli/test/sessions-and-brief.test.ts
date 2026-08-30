@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { driftlockDir, openRepoDb, repoDbPath } from '@driftlock/core';
 import { runBrief } from '../src/brief.ts';
 import { formatBrief, formatSessions } from '../src/format.ts';
@@ -99,7 +99,7 @@ describe('runBrief', () => {
     repoDb.close();
 
     const result = await runBrief({ cwd: repoRoot, repoRoot, write: true });
-    expect(result.written?.map((w) => w.path.split('/').pop())).toEqual(['CLAUDE.md', 'AGENTS.md']);
+    expect(result.written?.map((w) => basename(w.path))).toEqual(['CLAUDE.md', 'AGENTS.md']);
     expect(readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf-8')).toContain('hello');
   });
 
