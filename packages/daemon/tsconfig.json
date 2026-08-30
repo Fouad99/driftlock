@@ -4,6 +4,11 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "references": [{ "path": "../../packages/core" }],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../adapters/claude-code" },
+    { "path": "../adapters/codex" },
+    { "path": "../analyzers" }
+  ],
   "include": ["src"]
 }

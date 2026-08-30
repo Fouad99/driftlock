@@ -9,7 +9,15 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@driftlock/core": "workspace:*"
+    "@driftlock/adapter-claude-code": "workspace:*",
+    "@driftlock/adapter-codex": "workspace:*",
+    "@driftlock/analyzers": "workspace:*",
+    "@driftlock/core": "workspace:*",
+    "@driftlock/daemon": "workspace:*",
+    "ulid": "^2.3.0"
+  },
+  "bin": {
+    "driftlock": "./src/index.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.1.14",

@@ -87,6 +87,9 @@ typings/
 # Next.js build output
 .next
 
+# md files
+DECISIONS.md
+
 # Nuxt.js build / generate output
 .nuxt
 dist
@@ -114,3 +117,4 @@ dist
 
 #docs
 docs
+.driftlock/

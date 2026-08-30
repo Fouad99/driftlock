@@ -82,6 +82,52 @@ export class RepoStore {
     this.db.close();
   }
 
+  /** Runs `fn` atomically — all its writes commit together, or none do. */
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
+  // --- hook idempotency ---
+
+  hasAppliedEnvelope(envelopeId: string): boolean {
+    return (
+      this.db
+        .query('SELECT 1 FROM applied_hook_envelopes WHERE envelope_id = ?')
+        .get(envelopeId) !== null
+    );
+  }
+
+  /**
+   * Atomically claims an envelope id: returns `true` and reserves it (this
+   * call is the only one that will ever return `true` for this id) if it
+   * wasn't already claimed, `false` if it was. This is a single SQL
+   * statement — unlike a separate `hasAppliedEnvelope` check followed later
+   * by a mark, there's no window between the two where two concurrent
+   * callers could both see "not yet applied" and both proceed to apply.
+   * Callers should claim first, then do the actual work inside the same
+   * `transaction()` so a failure rolls back the claim along with everything
+   * else (see daemon's `hook-handler.ts`).
+   */
+  tryClaimEnvelope(envelopeId: string, appliedAt: number = Date.now()): boolean {
+    const result = this.db
+      .query('INSERT OR IGNORE INTO applied_hook_envelopes (envelope_id, applied_at) VALUES (?, ?)')
+      .run(envelopeId, appliedAt);
+    return result.changes > 0;
+  }
+
+  /**
+   * Releases a claim made by `tryClaimEnvelope` when it turns out nothing
+   * was actually applied (e.g. the output kind was unrecognized, or its
+   * session_start hadn't arrived yet). Without this, a no-op envelope would
+   * stay permanently marked applied and could never be retried once its
+   * prerequisites do show up. Safe under concurrent identical no-op
+   * deliveries: each caller independently claims-then-unclaims inside its
+   * own transaction, and no real mutation happens either way.
+   */
+  unclaimEnvelope(envelopeId: string): void {
+    this.db.query('DELETE FROM applied_hook_envelopes WHERE envelope_id = ?').run(envelopeId);
+  }
+
   // --- meta ---
 
   getMeta(key: string): string | null {
@@ -135,12 +181,24 @@ export class RepoStore {
     return row ? toSession(row) : null;
   }
 
+  getSessionByAgentSession(agent: Session['agent'], agentSession: string): Session | null {
+    const row = this.db
+      .query('SELECT * FROM sessions WHERE agent = ? AND agent_session = ?')
+      .get(agent, agentSession) as Record<string, unknown> | undefined;
+    return row ? toSession(row) : null;
+  }
+
   endSession(id: string, endedAt: number, reason: string, headAfter?: string | null): void {
     this.db
       .query(
         'UPDATE sessions SET ended_at = ?, end_reason = ?, head_after = COALESCE(?, head_after) WHERE id = ?',
       )
       .run(endedAt, reason, headAfter ?? null, id);
+  }
+
+  /** Un-finalizes a session — for a heuristic "ended" call (Codex idle-finalization) that later turns out to be wrong. */
+  reopenSession(id: string): void {
+    this.db.query('UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?').run(id);
   }
 
   listSessions(opts: { limit?: number; before?: number } = {}): Session[] {
@@ -177,6 +235,29 @@ export class RepoStore {
     return seqs;
   }
 
+  /**
+   * Atomically replaces all of a session's events with a fresh set (deletes
+   * then re-inserts, re-assigning `seq` from 0). For agents whose transcript
+   * is re-read from scratch on every sync (Codex — see adapter-codex's
+   * `syncCodexSessionFile`) rather than incrementally appended to.
+   */
+  replaceEvents(sessionId: string, events: NewEvent[]): number[] {
+    return this.transaction(() => {
+      this.db.query('DELETE FROM events WHERE session_id = ?').run(sessionId);
+      const insert = this.db.query(
+        'INSERT INTO events (session_id, seq, ts, kind, payload) VALUES (?, ?, ?, ?, ?)',
+      );
+      const seqs: number[] = [];
+      let seq = 0;
+      for (const e of events) {
+        insert.run(sessionId, seq, e.ts, e.kind, JSON.stringify(e.payload));
+        seqs.push(seq);
+        seq += 1;
+      }
+      return seqs;
+    });
+  }
+
   getEvents(
     sessionId: string,
     opts: { from?: number; to?: number; kinds?: string[] } = {},
@@ -201,6 +282,19 @@ export class RepoStore {
   }
 
   // --- findings ---
+
+  /**
+   * Deletes a session's still-open findings — call before re-running
+   * analyzers over it (report re-run, a duplicate session_end hook) so
+   * findings are *replaced*, not accumulated. Resolved findings are left
+   * alone: a user's "I looked at this and it's fine" shouldn't be erased by
+   * a later re-analysis.
+   */
+  deleteOpenFindings(sessionId: string): void {
+    this.db
+      .query('DELETE FROM findings WHERE session_id = ? AND resolved_at IS NULL')
+      .run(sessionId);
+  }
 
   createFinding(f: NewFinding): Finding {
     const id = ulid();

@@ -8,6 +8,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "bin": {
+    "driftlock-hook": "./src/index.ts"
+  },
   "dependencies": {
     "@driftlock/core": "workspace:*"
   },
