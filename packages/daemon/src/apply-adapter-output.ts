@@ -20,17 +20,29 @@ export interface AppliedOutput {
 export function applyAdapterOutput(output: AdapterOutput, repoDb: RepoStore): AppliedOutput | null {
   switch (output.kind) {
     case 'session_start': {
-      const session = repoDb.createSession(output.session);
+      // Reuses an existing session for this (agent, agentSession) rather
+      // than creating a duplicate — e.g. a Codex SessionStart hook arriving
+      // after the transcript watcher already opened the same session (the
+      // daemon restarted mid-session). See `getOrCreateSessionByAgentSession`.
+      const { session } = repoDb.getOrCreateSessionByAgentSession(output.session);
+      // Marked here (not inferred from event rows) because a session whose
+      // only hook activity ends up being SessionStart + SessionEnd, with no
+      // tool calls or prompts in between, writes zero `events` rows — but
+      // is unambiguously hook-backed and must never be idle-reopened by the
+      // transcript watcher. See `markSessionHookBacked`.
+      repoDb.markSessionHookBacked(session.id);
       return { sessionId: session.id, sessionEnded: false };
     }
     case 'events': {
       if (!repoDb.getSession(output.sessionId)) return null;
-      repoDb.appendEvents(output.sessionId, output.events);
+      repoDb.appendEvents(output.sessionId, output.events, 'hooks');
+      repoDb.markSessionHookBacked(output.sessionId);
       return { sessionId: output.sessionId, sessionEnded: false };
     }
     case 'session_end': {
       if (!repoDb.getSession(output.sessionId)) return null;
       repoDb.endSession(output.sessionId, Date.now(), output.reason);
+      repoDb.markSessionHookBacked(output.sessionId);
       return { sessionId: output.sessionId, sessionEnded: true };
     }
     default:
