@@ -23,6 +23,9 @@ importers:
       '@driftlock/core':
         specifier: workspace:*
         version: link:../../core
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
     devDependencies:
       '@types/bun':
         specifier: ^1.1.14
@@ -75,9 +78,24 @@ importers:
 
   packages/cli:
     dependencies:
+      '@driftlock/adapter-claude-code':
+        specifier: workspace:*
+        version: link:../adapters/claude-code
+      '@driftlock/adapter-codex':
+        specifier: workspace:*
+        version: link:../adapters/codex
+      '@driftlock/analyzers':
+        specifier: workspace:*
+        version: link:../analyzers
       '@driftlock/core':
         specifier: workspace:*
         version: link:../core
+      '@driftlock/daemon':
+        specifier: workspace:*
+        version: link:../daemon
+      ulid:
+        specifier: ^2.3.0
+        version: 2.4.0
     devDependencies:
       '@types/bun':
         specifier: ^1.1.14
@@ -104,10 +122,22 @@ importers:
 
   packages/daemon:
     dependencies:
+      '@driftlock/adapter-codex':
+        specifier: workspace:*
+        version: link:../adapters/codex
+      '@driftlock/analyzers':
+        specifier: workspace:*
+        version: link:../analyzers
       '@driftlock/core':
         specifier: workspace:*
         version: link:../core
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
     devDependencies:
+      '@driftlock/adapter-claude-code':
+        specifier: workspace:*
+        version: link:../adapters/claude-code
       '@types/bun':
         specifier: ^1.1.14
         version: 1.4.0

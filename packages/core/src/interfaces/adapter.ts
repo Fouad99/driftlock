@@ -52,7 +52,12 @@ export interface AdapterContext {
 export interface Adapter {
   readonly agent: AgentId;
   readonly capabilities: AdapterCapabilities;
-  onHook?(envelope: HookEnvelope, ctx: AdapterContext): Promise<AdapterOutput>;
+  // Array, not a single value: one hook payload can translate into more than
+  // one thing (e.g. Claude Code's `Stop` both delivers the final assistant
+  // turn as an `events` output and ends the session as a `session_end`
+  // output) — see architecture doc §4.3's own note that a hook payload maps
+  // to "zero or more events".
+  onHook?(envelope: HookEnvelope, ctx: AdapterContext): Promise<AdapterOutput[]>;
   parseTranscript?(file: TranscriptRef, ctx: AdapterContext): AsyncIterable<AdapterOutput>;
   install(repo: RepoRef): Promise<InstallResult>;
 }

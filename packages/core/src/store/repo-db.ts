@@ -135,6 +135,13 @@ export class RepoStore {
     return row ? toSession(row) : null;
   }
 
+  getSessionByAgentSession(agent: Session['agent'], agentSession: string): Session | null {
+    const row = this.db
+      .query('SELECT * FROM sessions WHERE agent = ? AND agent_session = ?')
+      .get(agent, agentSession) as Record<string, unknown> | undefined;
+    return row ? toSession(row) : null;
+  }
+
   endSession(id: string, endedAt: number, reason: string, headAfter?: string | null): void {
     this.db
       .query(
