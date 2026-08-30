@@ -3,7 +3,14 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { noopLogger, openRegistryDb, openRepoDb, repoDbPath } from '@driftlock/core';
+import {
+  noopLogger,
+  openRegistryDb,
+  openRepoDb,
+  openSpoolDb,
+  repoDbPath,
+  spoolDbPath,
+} from '@driftlock/core';
 import { readDaemonJson } from '../src/daemon-json.ts';
 import { type DaemonHandle, startDaemon } from '../src/index.ts';
 
@@ -11,6 +18,7 @@ let base: string;
 let repoDir: string;
 let home: string;
 let originalHome: string | undefined;
+let originalUserProfile: string | undefined;
 let daemon: DaemonHandle | undefined;
 
 async function waitUntil(check: () => boolean, timeoutMs = 5000): Promise<void> {
@@ -29,7 +37,12 @@ beforeEach(() => {
   execFileSync('git', ['init', '-q'], { cwd: repoDir });
 
   originalHome = process.env.HOME;
+  originalUserProfile = process.env.USERPROFILE;
+  // codexSessionsDir() reads USERPROFILE on win32, HOME everywhere else
+  // (architecture doc §5.5) — both must be overridden for this fake home to
+  // actually take effect regardless of which OS the test runs on.
   process.env.HOME = join(base, 'fake-home');
+  process.env.USERPROFILE = process.env.HOME;
   mkdirSync(join(process.env.HOME, '.codex', 'sessions'), { recursive: true });
 });
 
@@ -41,6 +54,12 @@ afterEach(() => {
     delete process.env.HOME;
   } else {
     process.env.HOME = originalHome;
+  }
+  if (originalUserProfile === undefined) {
+    // biome-ignore lint/performance/noDelete: same as above
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = originalUserProfile;
   }
   rmSync(base, { recursive: true, force: true });
 });
@@ -64,16 +83,24 @@ describe('startDaemon', () => {
     expect(res.status).toBe(200);
   });
 
-  test('drains a pre-existing spool file on startup', async () => {
-    const spoolPath = join(home, 'spool');
-    mkdirSync(spoolPath, { recursive: true });
-    const envelope = { agent: 'codex', event: 'test', cwd: '/repo', receivedAt: 1, payload: {} };
-    writeFileSync(join(spoolPath, 'codex.jsonl'), `${JSON.stringify(envelope)}\n`);
+  test('drains a pre-existing spool entry on startup', async () => {
+    mkdirSync(home, { recursive: true });
+    const seedDb = openSpoolDb(spoolDbPath(home));
+    seedDb.enqueue({
+      id: 'e1',
+      agent: 'codex',
+      event: 'test',
+      cwd: '/repo',
+      receivedAt: 1,
+      payload: {},
+    });
+    seedDb.close();
 
     daemon = await startDaemon({ driftlockHomeDir: home, logger: noopLogger });
 
-    const { existsSync } = await import('node:fs');
-    expect(existsSync(join(spoolPath, 'codex.jsonl'))).toBe(false);
+    const db = openSpoolDb(spoolDbPath(home));
+    expect(db.count()).toBe(0);
+    db.close();
   });
 
   test('watches ~/.codex/sessions, ingests a matching session for a registered repo, and stores findings', async () => {
@@ -92,7 +119,15 @@ describe('startDaemon', () => {
 
     writeCodexFixture('sess.jsonl', 'session-2.jsonl', repoDir);
 
-    daemon = await startDaemon({ driftlockHomeDir: home, logger: noopLogger });
+    daemon = await startDaemon({
+      driftlockHomeDir: home,
+      logger: noopLogger,
+      // The fixture's mtime is already "old" by the time this test runs, so
+      // even a near-zero idle threshold is enough for the watcher to treat
+      // it as finished on its first pass — real usage defaults to 2 minutes.
+      codexIdleThresholdMs: 10,
+      codexWatchIntervalMs: 50,
+    });
 
     const repoDb = openRepoDb(repoDbPath(repoDir));
     try {

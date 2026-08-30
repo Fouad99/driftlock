@@ -54,6 +54,14 @@ export const REPO_DB_MIGRATIONS: string[] = [
     value TEXT
   );
 
+  -- Idempotency ledger for hook envelopes (client-generated id): a request
+  -- delivered live but then replayed via the spool (because the client
+  -- couldn't confirm delivery before its own timeout) is applied once.
+  CREATE TABLE IF NOT EXISTS applied_hook_envelopes (
+    envelope_id TEXT PRIMARY KEY,
+    applied_at  INTEGER NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_findings_session ON findings(session_id);
   CREATE INDEX IF NOT EXISTS idx_findings_resolved ON findings(resolved_at);
   CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);

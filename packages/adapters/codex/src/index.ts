@@ -5,7 +5,11 @@ export { codexSessionsDir, listSessionFiles } from './paths.ts';
 export type { SessionFile } from './paths.ts';
 export {
   findAndIngestCodexSessions,
-  ingestCodexTranscript,
+  syncCodexSessionFile,
+  syncAndMaybeFinalize,
+  finalizeIfIdle,
+  isFileIdle,
   readCodexSessionMeta,
+  DEFAULT_IDLE_THRESHOLD_MS,
 } from './ingest.ts';
-export type { CodexSessionMeta } from './ingest.ts';
+export type { CodexSessionMeta, SyncResult } from './ingest.ts';

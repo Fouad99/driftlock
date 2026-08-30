@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openSpoolDb, spoolDbPath } from '@driftlock/core';
 import { readDaemonTarget } from '../src/daemon-target.ts';
-import { appendToSpool, spoolPath } from '../src/spool.ts';
+import { appendToSpool } from '../src/spool.ts';
 
 let home: string;
 
@@ -16,8 +17,9 @@ afterEach(() => {
 });
 
 describe('appendToSpool', () => {
-  test('creates the spool directory and appends a JSON line', () => {
+  test('enqueues an envelope into spool.sqlite', () => {
     const envelope = {
+      id: 'e1',
       agent: 'codex' as const,
       event: 'notify',
       cwd: '/repo',
@@ -25,12 +27,17 @@ describe('appendToSpool', () => {
       payload: {},
     };
     appendToSpool(home, envelope);
-    const content = readFileSync(spoolPath(home, 'codex'), 'utf-8');
-    expect(JSON.parse(content.trim())).toEqual(envelope);
+
+    const db = openSpoolDb(spoolDbPath(home));
+    const pending = db.listPending();
+    db.close();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.envelope).toEqual(envelope);
   });
 
-  test('appends multiple envelopes on separate lines', () => {
+  test('enqueues multiple envelopes as separate entries, oldest first', () => {
     const envelope = {
+      id: 'e1',
       agent: 'codex' as const,
       event: 'notify',
       cwd: '/repo',
@@ -39,8 +46,13 @@ describe('appendToSpool', () => {
     };
     appendToSpool(home, envelope);
     appendToSpool(home, { ...envelope, receivedAt: 2 });
-    const lines = readFileSync(spoolPath(home, 'codex'), 'utf-8').trim().split('\n');
-    expect(lines).toHaveLength(2);
+
+    const db = openSpoolDb(spoolDbPath(home));
+    const pending = db.listPending();
+    db.close();
+    expect(pending).toHaveLength(2);
+    expect((pending[0]?.envelope as typeof envelope).receivedAt).toBe(1);
+    expect((pending[1]?.envelope as typeof envelope).receivedAt).toBe(2);
   });
 });
 

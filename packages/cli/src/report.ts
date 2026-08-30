@@ -1,9 +1,7 @@
 import { join } from 'node:path';
 import { findAndIngestCodexSessions } from '@driftlock/adapter-codex';
-import { DETERMINISTIC_ANALYZERS, runAnalyzers } from '@driftlock/analyzers';
 import type { Event, Finding, Logger, Session } from '@driftlock/core';
 import {
-  buildGitContext,
   driftlockHome,
   findRepoRoot,
   noopLogger,
@@ -13,7 +11,7 @@ import {
   repoDbPath,
   syncSessionIndex,
 } from '@driftlock/core';
-import { deriveTask } from './task.ts';
+import { analyzeAndStore } from '@driftlock/daemon';
 
 export interface ReportOptions {
   cwd: string;
@@ -53,29 +51,13 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
     }
     logger.debug('reporting on session', { sessionId: session.id, agent: session.agent });
 
+    // Shared with the daemon's session-end path (architecture doc §4.2) —
+    // *replaces* this session's open findings rather than appending, so
+    // re-running `report` on the same session never duplicates them.
+    const findingsCount = await analyzeAndStore(session.id, repoRoot, repoDb, logger);
     const events = repoDb.getEvents(session.id);
-    const task = deriveTask(session, events);
-    const git = buildGitContext(repoRoot, session.headBefore, session.headAfter) ?? undefined;
-    const previousFindings = repoDb
-      .listFindings({ open: true })
-      .filter((f) => f.sessionId !== session.id);
-
-    const newFindings = await runAnalyzers(
-      DETERMINISTIC_ANALYZERS,
-      {
-        session,
-        events,
-        previousFindings,
-        ...(task && { task }),
-        ...(git && { git }),
-      },
-      logger,
-    );
-    const findings = newFindings.map((f) => repoDb.createFinding(f));
-    logger.debug('analyzers finished', {
-      eventCount: events.length,
-      findingsCount: findings.length,
-    });
+    const findings = repoDb.listFindings({ sessionId: session.id, open: true });
+    logger.debug('analyzers finished', { eventCount: events.length, findingsCount });
 
     const repoId = readRepoMeta(repoRoot)?.repoId;
     if (repoId) {

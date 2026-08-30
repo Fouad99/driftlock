@@ -9,6 +9,7 @@ import { runReport } from '../src/report.ts';
 let base: string;
 let repoDir: string;
 let originalHome: string | undefined;
+let originalUserProfile: string | undefined;
 let originalDriftlockHome: string | undefined;
 
 beforeEach(() => {
@@ -20,8 +21,13 @@ beforeEach(() => {
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
 
   originalHome = process.env.HOME;
+  originalUserProfile = process.env.USERPROFILE;
   originalDriftlockHome = process.env.DRIFTLOCK_HOME;
+  // codexSessionsDir() reads USERPROFILE on win32, HOME everywhere else
+  // (architecture doc §5.5) — both must be overridden for this fake home to
+  // actually take effect regardless of which OS the test runs on.
   process.env.HOME = join(base, 'fake-home');
+  process.env.USERPROFILE = process.env.HOME;
   process.env.DRIFTLOCK_HOME = join(base, 'driftlock-home');
   mkdirSync(process.env.HOME, { recursive: true });
 });
@@ -31,26 +37,25 @@ afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
   // biome-ignore lint/performance/noDelete: same as above
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = originalUserProfile;
+  // biome-ignore lint/performance/noDelete: same as above
   if (originalDriftlockHome === undefined) delete process.env.DRIFTLOCK_HOME;
   else process.env.DRIFTLOCK_HOME = originalDriftlockHome;
   rmSync(base, { recursive: true, force: true });
 });
 
-function writeCodexFixture(repoRoot: string): void {
-  const fixturePath = join(
-    import.meta.dir,
-    '..',
-    '..',
-    '..',
-    'fixtures',
-    'codex',
-    'session-1.jsonl',
-  );
+function writeCodexFixture(
+  repoRoot: string,
+  fixture = 'session-1.jsonl',
+  name = 'sess_x1.jsonl',
+): void {
+  const fixturePath = join(import.meta.dir, '..', '..', '..', 'fixtures', 'codex', fixture);
   const raw = readFileSync(fixturePath, 'utf-8');
   const rewritten = raw.replace('"cwd":"/repo"', `"cwd":${JSON.stringify(repoRoot)}`);
   const sessionsDir = join(process.env.HOME as string, '.codex', 'sessions');
   mkdirSync(sessionsDir, { recursive: true });
-  writeFileSync(join(sessionsDir, 'sess_x1.jsonl'), rewritten);
+  writeFileSync(join(sessionsDir, name), rewritten);
 }
 
 describe('runInit', () => {
@@ -106,6 +111,17 @@ describe('runReport', () => {
     const second = await runReport({ cwd: repoDir });
 
     expect(second.session.agentSession).toBe('sess_x1');
+  });
+
+  test('re-running report on a session with findings does not duplicate them', async () => {
+    await runInit({ cwd: repoDir, agents: ['codex'] });
+    writeCodexFixture(repoDir, 'session-2.jsonl'); // has a genuine edit/test loop
+
+    const first = await runReport({ cwd: repoDir });
+    expect(first.findings.length).toBeGreaterThan(0);
+
+    const second = await runReport({ cwd: repoDir });
+    expect(second.findings.length).toBe(first.findings.length);
   });
 
   test('looking up an explicit unknown session id fails clearly', async () => {

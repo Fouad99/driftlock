@@ -26,6 +26,9 @@ export interface DaemonOptions {
   /** Overrides the default file+console logger — mainly for tests that want it quiet. */
   logger?: Logger;
   logLevel?: LogLevel;
+  /** How long a Codex transcript must stop changing before its session is considered ended. Mainly for tests. */
+  codexIdleThresholdMs?: number;
+  codexWatchIntervalMs?: number;
 }
 
 export interface DaemonHandle {
@@ -56,6 +59,18 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<DaemonHandl
 
   const registry = openRegistryDb(`${home}/registry.sqlite`);
 
+  // Drained before the HTTP listener starts (or daemon.json is published)
+  // so a hook client can't discover the daemon and deliver a live event
+  // mid-drain — a live SessionStart racing a still-spooled, older
+  // SessionStart for the same session could otherwise be claimed and
+  // discarded as "nothing applied" before the spooled one ever gets a
+  // chance to establish the session.
+  const drainResult = await drainSpool(
+    home,
+    (envelope) => handleHookEnvelope(envelope, adapters, registry, logger.child('hook')),
+    logger.child('spool'),
+  );
+
   const server = createServer({
     port: opts.port ?? 0,
     token,
@@ -74,17 +89,13 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<DaemonHandl
     startedAt: Date.now(),
   });
 
-  const drainResult = await drainSpool(
-    home,
-    (envelope) => handleHookEnvelope(envelope, adapters, registry, logger.child('hook')),
-    logger.child('spool'),
-  );
-
   const watcher = startCodexWatcher({
     registryDb: registry,
     logger: logger.child('watcher'),
     onModeDetected: (mode: WatcherMode) => registry.setDaemonState('codex_watch_mode', mode),
     ...(opts.onSessionProcessed && { onProcessed: opts.onSessionProcessed }),
+    ...(opts.codexIdleThresholdMs !== undefined && { idleThresholdMs: opts.codexIdleThresholdMs }),
+    ...(opts.codexWatchIntervalMs !== undefined && { intervalMs: opts.codexWatchIntervalMs }),
   });
 
   registry.setDaemonState('pid', String(process.pid));
@@ -114,6 +125,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<DaemonHandl
 export { createServer } from './server.ts';
 export { drainSpool } from './spool.ts';
 export { startCodexWatcher } from './codex-watcher.ts';
+export { analyzeAndStore } from './analyze-and-store.ts';
 export {
   readDaemonJson,
   writeDaemonJson,

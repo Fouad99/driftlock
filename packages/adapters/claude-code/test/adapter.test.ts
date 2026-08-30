@@ -7,7 +7,14 @@ const repo: RepoRef = { root: '/repo', repoId: 'r1' };
 const ctx = { repo };
 
 function envelope(event: string, payload: unknown): HookEnvelope {
-  return { agent: 'claude-code', event, cwd: '/repo', receivedAt: 1000, payload };
+  return {
+    id: 'test-envelope',
+    agent: 'claude-code',
+    event,
+    cwd: '/repo',
+    receivedAt: 1000,
+    payload,
+  };
 }
 
 describe('ClaudeCodeAdapter.onHook — SessionStart', () => {

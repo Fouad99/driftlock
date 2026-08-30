@@ -87,6 +87,7 @@ async function checkHookLatency(port: number, token: string): Promise<DoctorChec
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({
+        id: crypto.randomUUID(),
         agent: 'codex',
         event: 'doctor-probe',
         cwd: process.cwd(),

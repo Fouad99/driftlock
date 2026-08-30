@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openSpoolDb, spoolDbPath } from '@driftlock/core';
 import { main } from '../src/index.ts';
-import { spoolPath } from '../src/spool.ts';
 
 let home: string;
 let originalDriftlockHome: string | undefined;
@@ -37,7 +37,10 @@ describe('main', () => {
   test('spools and exits 0 when no daemon is reachable', async () => {
     const code = await main(['codex', 'notify'], '{}');
     expect(code).toBe(0);
-    expect(existsSync(spoolPath(home, 'codex'))).toBe(true);
+    const db = openSpoolDb(spoolDbPath(home));
+    const count = db.count();
+    db.close();
+    expect(count).toBe(1);
   });
 
   test('with --wait, prints the daemon response body to stdout', async () => {

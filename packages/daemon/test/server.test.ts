@@ -42,6 +42,7 @@ describe('GET /health', () => {
 
 describe('POST /hook', () => {
   const envelope = {
+    id: 'test-envelope-1',
     agent: 'codex',
     event: 'test',
     cwd: '/repo',

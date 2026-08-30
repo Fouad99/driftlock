@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentId, HookEnvelope } from '@driftlock/core';
 
 /** Builds the envelope from the raw stdin text; agent hooks send JSON, but nothing is ever dropped if they don't. */
@@ -16,5 +17,5 @@ export function buildEnvelope(
       payload = { raw: trimmed };
     }
   }
-  return { agent, event, cwd, receivedAt: Date.now(), payload };
+  return { id: randomUUID(), agent, event, cwd, receivedAt: Date.now(), payload };
 }

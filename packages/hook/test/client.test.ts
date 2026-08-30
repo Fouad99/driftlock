@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openSpoolDb, spoolDbPath } from '@driftlock/core';
 import { runHookClient } from '../src/client.ts';
-import { spoolPath } from '../src/spool.ts';
 
 let home: string;
 let fakeDaemon: ReturnType<typeof Bun.serve> | undefined;
@@ -26,6 +26,13 @@ function writeDaemonJson(port: number, token = TOKEN): void {
   );
 }
 
+function spoolCount(): number {
+  const db = openSpoolDb(spoolDbPath(home));
+  const n = db.count();
+  db.close();
+  return n;
+}
+
 describe('runHookClient', () => {
   test('spools when there is no daemon.json', async () => {
     const result = await runHookClient({
@@ -36,7 +43,7 @@ describe('runHookClient', () => {
       stdinText: '{}',
     });
     expect(result.delivered).toBe(false);
-    expect(existsSync(spoolPath(home, 'codex'))).toBe(true);
+    expect(spoolCount()).toBe(1);
   });
 
   test('spools when the daemon is unreachable (stale port)', async () => {
@@ -56,7 +63,7 @@ describe('runHookClient', () => {
       timeoutMs: 200,
     });
     expect(result.delivered).toBe(false);
-    expect(existsSync(spoolPath(home, 'codex'))).toBe(true);
+    expect(spoolCount()).toBe(1);
   });
 
   test('delivers to a live daemon with the right auth header and does not spool', async () => {
@@ -89,7 +96,7 @@ describe('runHookClient', () => {
       event: 'notify',
       payload: { hello: 'world' },
     });
-    expect(existsSync(spoolPath(home, 'codex'))).toBe(false);
+    expect(spoolCount()).toBe(0);
   });
 
   test('spools when the daemon responds with a non-2xx status', async () => {
@@ -110,7 +117,7 @@ describe('runHookClient', () => {
       stdinText: '{}',
     });
     expect(result.delivered).toBe(false);
-    expect(existsSync(spoolPath(home, 'codex'))).toBe(true);
+    expect(spoolCount()).toBe(1);
   });
 
   test('spools when the daemon does not respond within the timeout', async () => {
@@ -133,10 +140,10 @@ describe('runHookClient', () => {
       timeoutMs: 50,
     });
     expect(result.delivered).toBe(false);
-    expect(existsSync(spoolPath(home, 'codex'))).toBe(true);
+    expect(spoolCount()).toBe(1);
   });
 
-  test('appends to the spool file for the correct agent when spooling', async () => {
+  test('enqueues an entry for the correct agent when spooling', async () => {
     await runHookClient({
       agent: 'claude-code',
       event: 'SessionStart',
@@ -144,8 +151,10 @@ describe('runHookClient', () => {
       driftlockHomeDir: home,
       stdinText: '{}',
     });
-    expect(existsSync(spoolPath(home, 'claude-code'))).toBe(true);
-    const line = readFileSync(spoolPath(home, 'claude-code'), 'utf-8').trim();
-    expect(JSON.parse(line)).toMatchObject({ agent: 'claude-code', event: 'SessionStart' });
+    const db = openSpoolDb(spoolDbPath(home));
+    const pending = db.listPending();
+    db.close();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.envelope).toMatchObject({ agent: 'claude-code', event: 'SessionStart' });
   });
 });

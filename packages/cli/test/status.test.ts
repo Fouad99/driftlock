@@ -10,6 +10,7 @@ import { runStatus } from '../src/status.ts';
 let base: string;
 let repoDir: string;
 let originalHome: string | undefined;
+let originalUserProfile: string | undefined;
 let originalDriftlockHome: string | undefined;
 
 beforeEach(() => {
@@ -21,8 +22,13 @@ beforeEach(() => {
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoDir });
 
   originalHome = process.env.HOME;
+  originalUserProfile = process.env.USERPROFILE;
   originalDriftlockHome = process.env.DRIFTLOCK_HOME;
+  // codexSessionsDir() reads USERPROFILE on win32, HOME everywhere else
+  // (architecture doc §5.5) — both must be overridden for this fake home to
+  // actually take effect regardless of which OS the test runs on.
   process.env.HOME = join(base, 'fake-home');
+  process.env.USERPROFILE = process.env.HOME;
   process.env.DRIFTLOCK_HOME = join(base, 'driftlock-home');
   mkdirSync(process.env.HOME, { recursive: true });
 });
@@ -31,6 +37,9 @@ afterEach(() => {
   // biome-ignore lint/performance/noDelete: assigning undefined would stringify to "undefined"
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
+  // biome-ignore lint/performance/noDelete: same as above
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = originalUserProfile;
   // biome-ignore lint/performance/noDelete: same as above
   if (originalDriftlockHome === undefined) delete process.env.DRIFTLOCK_HOME;
   else process.env.DRIFTLOCK_HOME = originalDriftlockHome;

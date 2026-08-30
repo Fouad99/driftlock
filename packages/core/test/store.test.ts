@@ -145,11 +145,168 @@ describe('RepoStore', () => {
     expect(repoDb.getFinding(finding.id)?.resolvedAt).toBe(2000);
   });
 
+  test('deleteOpenFindings() removes only unresolved findings for that session', () => {
+    const session = repoDb.createSession({
+      agent: 'codex',
+      agentSession: null,
+      repoRoot: '/repo',
+      branch: null,
+      headBefore: null,
+      headAfter: null,
+      startedAt: 1000,
+      taskText: null,
+      tokenIn: null,
+      tokenOut: null,
+      costUsd: null,
+      source: 'transcript',
+    });
+    const other = repoDb.createSession({
+      agent: 'codex',
+      agentSession: null,
+      repoRoot: '/repo',
+      branch: null,
+      headBefore: null,
+      headAfter: null,
+      startedAt: 1000,
+      taskText: null,
+      tokenIn: null,
+      tokenOut: null,
+      costUsd: null,
+      source: 'transcript',
+    });
+
+    const resolved = repoDb.createFinding({
+      sessionId: session.id,
+      analyzer: 'loop',
+      severity: 'warn',
+      title: 'old finding, already resolved',
+      explanation: '...',
+      fromSeq: null,
+      toSeq: null,
+      data: null,
+    });
+    repoDb.resolveFinding(resolved.id, 2000);
+    repoDb.createFinding({
+      sessionId: session.id,
+      analyzer: 'scope',
+      severity: 'warn',
+      title: 'stale finding from a prior analyzer run',
+      explanation: '...',
+      fromSeq: null,
+      toSeq: null,
+      data: null,
+    });
+    repoDb.createFinding({
+      sessionId: other.id,
+      analyzer: 'loop',
+      severity: 'warn',
+      title: 'a different session entirely',
+      explanation: '...',
+      fromSeq: null,
+      toSeq: null,
+      data: null,
+    });
+
+    repoDb.deleteOpenFindings(session.id);
+
+    expect(repoDb.listFindings({ sessionId: session.id })).toHaveLength(1); // the resolved one survives
+    expect(repoDb.getFinding(resolved.id)).not.toBeNull();
+    expect(repoDb.listFindings({ sessionId: other.id })).toHaveLength(1); // untouched
+  });
+
+  test('reopenSession() clears endedAt and endReason', () => {
+    const session = repoDb.createSession({
+      agent: 'codex',
+      agentSession: null,
+      repoRoot: '/repo',
+      branch: null,
+      headBefore: null,
+      headAfter: null,
+      startedAt: 1000,
+      taskText: null,
+      tokenIn: null,
+      tokenOut: null,
+      costUsd: null,
+      source: 'transcript',
+    });
+    repoDb.endSession(session.id, 2000, 'idle');
+    expect(repoDb.getSession(session.id)?.endedAt).toBe(2000);
+
+    repoDb.reopenSession(session.id);
+
+    const reopened = repoDb.getSession(session.id);
+    expect(reopened?.endedAt).toBeNull();
+    expect(reopened?.endReason).toBeNull();
+  });
+
   test('upserts and reads a brief', () => {
     repoDb.upsertBrief({ sessionId: 'next-session', generatedAt: 1000, markdown: '# brief v1' });
     expect(repoDb.getBrief('next-session')?.markdown).toBe('# brief v1');
     repoDb.upsertBrief({ sessionId: 'next-session', generatedAt: 2000, markdown: '# brief v2' });
     expect(repoDb.getBrief('next-session')?.markdown).toBe('# brief v2');
+  });
+
+  test('transaction() commits all writes on success', () => {
+    repoDb.transaction(() => {
+      repoDb.setMeta('a', '1');
+      repoDb.setMeta('b', '2');
+    });
+    expect(repoDb.getMeta('a')).toBe('1');
+    expect(repoDb.getMeta('b')).toBe('2');
+  });
+
+  test('transaction() rolls back all writes if it throws', () => {
+    expect(() =>
+      repoDb.transaction(() => {
+        repoDb.setMeta('c', '1');
+        throw new Error('boom');
+      }),
+    ).toThrow('boom');
+    expect(repoDb.getMeta('c')).toBeNull();
+  });
+
+  test('hasAppliedEnvelope() / tryClaimEnvelope() form an idempotency ledger', () => {
+    expect(repoDb.hasAppliedEnvelope('env-1')).toBe(false);
+    repoDb.tryClaimEnvelope('env-1', 1000);
+    expect(repoDb.hasAppliedEnvelope('env-1')).toBe(true);
+    expect(repoDb.hasAppliedEnvelope('env-2')).toBe(false);
+  });
+
+  test('tryClaimEnvelope() returns true exactly once for a given id — the atomic claim', () => {
+    expect(repoDb.tryClaimEnvelope('env-1', 1000)).toBe(true);
+    expect(repoDb.tryClaimEnvelope('env-1', 2000)).toBe(false); // second "concurrent" caller loses
+    expect(repoDb.tryClaimEnvelope('env-1', 3000)).toBe(false); // and stays lost, not flaky
+    expect(repoDb.hasAppliedEnvelope('env-1')).toBe(true);
+  });
+
+  test('replaceEvents() deletes prior events and re-assigns seq from 0', () => {
+    const session = repoDb.createSession({
+      agent: 'codex',
+      agentSession: null,
+      repoRoot: '/repo',
+      branch: null,
+      headBefore: null,
+      headAfter: null,
+      startedAt: 1000,
+      taskText: null,
+      tokenIn: null,
+      tokenOut: null,
+      costUsd: null,
+      source: 'transcript',
+    });
+    repoDb.appendEvents(session.id, [
+      { sessionId: session.id, ts: 1, kind: 'user_turn', payload: { text: 'first pass' } },
+    ]);
+
+    const seqs = repoDb.replaceEvents(session.id, [
+      { sessionId: session.id, ts: 1, kind: 'user_turn', payload: { text: 'a' } },
+      { sessionId: session.id, ts: 2, kind: 'agent_turn', payload: { text: 'b' } },
+    ]);
+
+    expect(seqs).toEqual([0, 1]);
+    const events = repoDb.getEvents(session.id);
+    expect(events).toHaveLength(2);
+    expect(events[0]?.payload).toEqual({ text: 'a' });
   });
 });
 

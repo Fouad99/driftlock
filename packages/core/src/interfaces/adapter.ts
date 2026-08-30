@@ -5,6 +5,11 @@ import type { AgentId, SessionInit } from '../schema/session.ts';
 // Architecture doc §4.3 — Adapter contract.
 
 export interface HookEnvelope {
+  // Client-generated (crypto.randomUUID()) once per hook invocation — lets
+  // the daemon dedupe a request that was delivered live but then replayed
+  // via the spool because the client couldn't confirm delivery before its
+  // own timeout (architecture doc §4.1's request-response timeout budget).
+  id: string;
   agent: AgentId;
   event: string;
   cwd: string;

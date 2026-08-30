@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
-import type { RepoStore } from '@driftlock/core';
-import { pathsEqual } from '@driftlock/core';
+import type { AdapterOutput, Logger, RepoStore } from '@driftlock/core';
+import { noopLogger, pathsEqual } from '@driftlock/core';
 import { CodexAdapter } from './adapter.ts';
 import { type SessionFile, codexSessionsDir, listSessionFiles } from './paths.ts';
 
@@ -27,59 +27,150 @@ export function readCodexSessionMeta(filePath: string): CodexSessionMeta | null 
   }
 }
 
+// A Codex session is "done" when its transcript stops changing — Codex gives
+// no other signal we consume (a real `notify` hook exists but isn't wired
+// yet; see architecture doc §4.3's Codex row). This is a heuristic, not a
+// hard fact: a long pause for user input or agent reasoning can exceed this
+// threshold without the session actually being over. Getting it wrong is
+// cheap and self-correcting — see `syncCodexSessionFile`'s reopen logic —
+// rather than a hard fact we fabricate finality from.
+export const DEFAULT_IDLE_THRESHOLD_MS = 2 * 60_000;
+
+export function isFileIdle(file: SessionFile, idleThresholdMs: number, now = Date.now()): boolean {
+  return now - file.mtimeMs >= idleThresholdMs;
+}
+
+export interface SyncResult {
+  sessionId: string;
+  isNewSession: boolean;
+  finalized: boolean;
+}
+
 /**
- * Fully parses one transcript and stores it, skipping if already ingested
- * (by agent session id). Returns the stored session's id, or null if it was
- * already present or the file wasn't a valid Codex transcript.
+ * Parses a Codex transcript and syncs it into the store — re-entrant: safe
+ * to call repeatedly as the file grows. The whole file is parsed into memory
+ * first; only if that fully succeeds does anything touch the database, and
+ * the write (create-or-reuse the session, replace its events) happens in one
+ * transaction — a parse failure (e.g. a line caught mid-write) or a mid-sync
+ * crash never leaves a partial session behind to get silently stuck.
  *
- * v0 limitation: ingestion is whole-file, once. A transcript that keeps
- * growing after its session is first seen (still-live) won't be re-parsed —
- * incremental re-ingestion needs real streaming support in `parseTranscript`,
- * which is out of scope for M1.
+ * Idle-finalization (see `finalizeIfIdle`) is a heuristic guess, not a fact —
+ * a long pause for user input or agent reasoning can easily exceed the idle
+ * threshold without the session actually being over. So "finalized" here is
+ * reversible: if the file has grown since the mtime we finalized it at
+ * (`endedAt`, which `finalizeIfIdle` sets to that mtime), the session is
+ * reopened and re-synced rather than the new content being silently
+ * dropped. A session is only ever truly skipped once its file's mtime stops
+ * moving past what we finalized it at.
+ *
+ * Returns null if the file isn't a valid/parseable Codex transcript, or if
+ * the session it belongs to is finalized and genuinely has nothing new.
  */
-export async function ingestCodexTranscript(
+export async function syncCodexSessionFile(
   file: SessionFile,
   repoRoot: string,
   repoDb: RepoStore,
-): Promise<string | null> {
+  logger: Logger = noopLogger,
+): Promise<SyncResult | null> {
   const meta = readCodexSessionMeta(file.path);
   if (!meta) return null;
-  if (repoDb.getSessionByAgentSession('codex', meta.id)) return null;
+
+  let existing = repoDb.getSessionByAgentSession('codex', meta.id);
+  if (existing?.endedAt !== null && existing?.endedAt !== undefined) {
+    if (file.mtimeMs <= existing.endedAt) {
+      return null; // finalized, and nothing has changed since — truly nothing to do
+    }
+    // Finalized, but the file has since grown — our idle guess was wrong.
+    logger.info('reopening a codex session finalized too early — the transcript grew again', {
+      sessionId: existing.id,
+      finalizedAtMtime: existing.endedAt,
+      currentMtime: file.mtimeMs,
+    });
+    repoDb.reopenSession(existing.id);
+    existing = repoDb.getSession(existing.id);
+  }
 
   const adapter = new CodexAdapter();
-  let sessionId: string | undefined;
-  let lastEventTs: number | undefined;
-  for await (const output of adapter.parseTranscript(
-    { path: file.path, repoRoot },
-    { repo: { root: repoRoot, repoId: '' } },
-  )) {
-    if (output.kind === 'session_start') {
-      sessionId = repoDb.createSession(output.session).id;
-    } else if (output.kind === 'events' && sessionId) {
-      repoDb.appendEvents(sessionId, output.events);
-      for (const e of output.events) lastEventTs = Math.max(lastEventTs ?? 0, e.ts);
-    } else if (output.kind === 'session_end' && sessionId) {
-      // session_end carries no timestamp of its own (architecture doc's
-      // AdapterOutput shape) — the last event's ts is the closest real
-      // approximation of when the session actually ended.
-      repoDb.endSession(sessionId, lastEventTs ?? Date.now(), output.reason);
+  let sessionInit: Extract<AdapterOutput, { kind: 'session_start' }>['session'] | undefined;
+  const events: Parameters<RepoStore['replaceEvents']>[1] = [];
+
+  try {
+    for await (const output of adapter.parseTranscript(
+      { path: file.path, repoRoot },
+      { repo: { root: repoRoot, repoId: '' } },
+    )) {
+      if (output.kind === 'session_start') sessionInit = output.session;
+      else if (output.kind === 'events') events.push(...output.events);
+      // session_end from the adapter is deliberately ignored — finalization
+      // here is decided by file idleness, not by "we reached the end of
+      // whatever bytes exist right now" (that was the bug: it treated every
+      // scan of a still-growing file as the session having ended).
     }
+  } catch (err) {
+    logger.error('failed to parse codex transcript, will retry on next change', {
+      file: file.path,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null; // nothing persisted — safe to retry once the file changes again
   }
-  return sessionId ?? null;
+
+  if (!sessionInit) return null;
+
+  const sessionId = repoDb.transaction(() => {
+    const id = existing ? existing.id : repoDb.createSession(sessionInit).id;
+    repoDb.replaceEvents(id, events);
+    return id;
+  });
+
+  return { sessionId, isNewSession: !existing, finalized: false };
 }
 
-/** Scans `~/.codex/sessions/` for transcripts belonging to `repoRoot` and ingests any not already stored. */
+/** Marks a session ended if its file has gone idle. No-op if already ended or still active. */
+export function finalizeIfIdle(
+  file: SessionFile,
+  sessionId: string,
+  repoDb: RepoStore,
+  idleThresholdMs: number = DEFAULT_IDLE_THRESHOLD_MS,
+  now: number = Date.now(),
+): boolean {
+  const session = repoDb.getSession(sessionId);
+  if (!session || session.endedAt !== null) return false;
+  if (!isFileIdle(file, idleThresholdMs, now)) return false;
+  repoDb.endSession(sessionId, file.mtimeMs, 'idle');
+  return true;
+}
+
+/** Syncs one transcript and finalizes it if its file has gone idle. The common entry point for both the CLI and the daemon watcher. */
+export async function syncAndMaybeFinalize(
+  file: SessionFile,
+  repoRoot: string,
+  repoDb: RepoStore,
+  opts: { idleThresholdMs?: number; logger?: Logger } = {},
+): Promise<SyncResult | null> {
+  const result = await syncCodexSessionFile(file, repoRoot, repoDb, opts.logger);
+  if (!result) return null;
+  const finalized = finalizeIfIdle(
+    file,
+    result.sessionId,
+    repoDb,
+    opts.idleThresholdMs ?? DEFAULT_IDLE_THRESHOLD_MS,
+  );
+  return { ...result, finalized };
+}
+
+/** Scans `~/.codex/sessions/` for transcripts belonging to `repoRoot` and syncs any that aren't already finalized. */
 export async function findAndIngestCodexSessions(
   repoRoot: string,
   repoDb: RepoStore,
+  opts: { idleThresholdMs?: number; logger?: Logger } = {},
 ): Promise<string[]> {
   const files = listSessionFiles(codexSessionsDir());
-  const ingested: string[] = [];
+  const synced: string[] = [];
   for (const file of files) {
     const meta = readCodexSessionMeta(file.path);
     if (!meta || !pathsEqual(meta.cwd, repoRoot)) continue;
-    const sessionId = await ingestCodexTranscript(file, repoRoot, repoDb);
-    if (sessionId) ingested.push(sessionId);
+    const result = await syncAndMaybeFinalize(file, repoRoot, repoDb, opts);
+    if (result) synced.push(result.sessionId);
   }
-  return ingested;
+  return synced;
 }

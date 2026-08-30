@@ -1,4 +1,4 @@
-import type { Adapter, HookEnvelope, Logger, RegistryStore } from '@driftlock/core';
+import type { Adapter, AdapterOutput, HookEnvelope, Logger, RegistryStore } from '@driftlock/core';
 import { noopLogger, openRepoDb, pathsEqual, repoDbPath, syncSessionIndex } from '@driftlock/core';
 import { analyzeAndStore } from './analyze-and-store.ts';
 import { applyAdapterOutput } from './apply-adapter-output.ts';
@@ -7,6 +7,13 @@ import type { ValidatedHookEnvelope } from './hook-envelope.ts';
 export interface HookHandlerResult {
   status: number;
   body: { ok: boolean; handled: boolean; note?: string };
+}
+
+interface ApplyResult {
+  duplicate: boolean;
+  handledAny: boolean;
+  touchedSessionIds: Set<string>;
+  endedSessionIds: Set<string>;
 }
 
 /**
@@ -20,6 +27,16 @@ export interface HookHandlerResult {
  * there's no adapter for this agent yet, no registered repo matches the
  * hook's cwd, or an output is a `request` kind not implemented until
  * M2/M4/M6.
+ *
+ * Idempotent by envelope id, and the claim is atomic: `tryClaimEnvelope`
+ * (one `INSERT OR IGNORE`) plus applying every output all happen inside one
+ * synchronous `repoDb.transaction()` callback, with no `await` anywhere
+ * inside it. Bun/Node's single-threaded event loop guarantees a synchronous
+ * callback runs to completion before any other queued request's callback
+ * can start — so two concurrent deliveries of the same envelope can't both
+ * pass the claim and both apply, the way a separate check-then-later-mark
+ * could. `adapter.onHook` (pure translation, no DB writes) runs *before*
+ * the transaction so the only thing inside it is synchronous DB work.
  */
 export async function handleHookEnvelope(
   envelope: ValidatedHookEnvelope,
@@ -52,6 +69,7 @@ export async function handleHookEnvelope(
   // matching core's `HookEnvelope` regardless of zod's optionality quirk for
   // `unknown`-typed fields (see hook-envelope.ts).
   const normalized: HookEnvelope = {
+    id: envelope.id,
     agent: envelope.agent,
     event: envelope.event,
     cwd: envelope.cwd,
@@ -64,40 +82,74 @@ export async function handleHookEnvelope(
 
   const repoDb = openRepoDb(repoDbPath(repo.root));
   try {
-    let handledAny = false;
-    const touchedSessionIds = new Set<string>();
-    const endedSessionIds = new Set<string>();
-
-    for (const output of outputs) {
-      if (output.kind === 'request') continue; // M2/M4/M6
-      const applied = applyAdapterOutput(output, repoDb);
-      if (!applied) {
-        if (output.kind !== 'session_start') {
-          logger.warn('output could not be applied — its session_start may have been missed', {
-            outputKind: output.kind,
-            sessionId:
-              output.kind === 'events' || output.kind === 'session_end'
-                ? output.sessionId
-                : undefined,
-          });
-        }
-        continue;
+    const result: ApplyResult = repoDb.transaction(() => {
+      if (!repoDb.tryClaimEnvelope(envelope.id)) {
+        return {
+          duplicate: true,
+          handledAny: false,
+          touchedSessionIds: new Set(),
+          endedSessionIds: new Set(),
+        };
       }
-      handledAny = true;
-      touchedSessionIds.add(applied.sessionId);
-      if (applied.sessionEnded) endedSessionIds.add(applied.sessionId);
+
+      let handledAny = false;
+      const touchedSessionIds = new Set<string>();
+      const endedSessionIds = new Set<string>();
+
+      for (const output of outputs as AdapterOutput[]) {
+        if (output.kind === 'request') continue; // M2/M4/M6
+        const applied = applyAdapterOutput(output, repoDb);
+        if (!applied) {
+          if (output.kind !== 'session_start') {
+            logger.warn('output could not be applied — its session_start may have been missed', {
+              outputKind: output.kind,
+              sessionId:
+                output.kind === 'events' || output.kind === 'session_end'
+                  ? output.sessionId
+                  : undefined,
+            });
+          }
+          continue;
+        }
+        handledAny = true;
+        touchedSessionIds.add(applied.sessionId);
+        if (applied.sessionEnded) endedSessionIds.add(applied.sessionId);
+      }
+
+      if (!handledAny) {
+        // Nothing was actually persisted (unrecognized output, or the
+        // session_start this depends on hasn't arrived yet) — release the
+        // claim so a later retry (e.g. once session_start does arrive via
+        // the spool) isn't permanently blocked by this no-op having already
+        // "applied" the envelope id.
+        repoDb.unclaimEnvelope(envelope.id);
+      }
+
+      return { duplicate: false, handledAny, touchedSessionIds, endedSessionIds };
+    });
+
+    if (result.duplicate) {
+      logger.debug('duplicate hook envelope, already applied — no-op', {
+        agent: envelope.agent,
+        event: envelope.event,
+      });
+      return { status: 200, body: { ok: true, handled: true, note: 'duplicate, already applied' } };
     }
 
-    for (const sessionId of endedSessionIds) {
+    // Analysis and registry sync are read-after-write follow-ups, not part
+    // of the atomic claim itself — safe to run outside the transaction
+    // since they're keyed off session ids the transaction already committed,
+    // and `analyzeAndStore` is idempotent (replaces, not appends).
+    for (const sessionId of result.endedSessionIds) {
       const findingsCount = await analyzeAndStore(sessionId, repo.root, repoDb, logger);
       logger.info('analyzed session on end', { repoId: repo.repoId, sessionId, findingsCount });
     }
-    for (const sessionId of touchedSessionIds) {
+    for (const sessionId of result.touchedSessionIds) {
       syncSessionIndex(registryDb, repoDb, repo.repoId, sessionId);
     }
     registryDb.upsertRepo({ ...repo, lastSeen: Date.now() });
 
-    if (!handledAny) {
+    if (!result.handledAny) {
       return {
         status: 200,
         body: {
