@@ -240,10 +240,22 @@ describe('RepoStore', () => {
   });
 
   test('upserts and reads a brief', () => {
-    repoDb.upsertBrief({ sessionId: 'next-session', generatedAt: 1000, markdown: '# brief v1' });
-    expect(repoDb.getBrief('next-session')?.markdown).toBe('# brief v1');
-    repoDb.upsertBrief({ sessionId: 'next-session', generatedAt: 2000, markdown: '# brief v2' });
-    expect(repoDb.getBrief('next-session')?.markdown).toBe('# brief v2');
+    repoDb.upsertBrief({ sessionId: 'source-session', generatedAt: 1000, markdown: '# brief v1' });
+    expect(repoDb.getBrief('source-session')?.markdown).toBe('# brief v1');
+    repoDb.upsertBrief({ sessionId: 'source-session', generatedAt: 2000, markdown: '# brief v2' });
+    expect(repoDb.getBrief('source-session')?.markdown).toBe('# brief v2');
+  });
+
+  test('getLatestBrief returns the most recently generated brief across sessions', () => {
+    expect(repoDb.getLatestBrief()).toBeNull();
+    repoDb.upsertBrief({ sessionId: 'session-a', generatedAt: 1000, markdown: '# a' });
+    repoDb.upsertBrief({ sessionId: 'session-b', generatedAt: 3000, markdown: '# b' });
+    repoDb.upsertBrief({ sessionId: 'session-c', generatedAt: 2000, markdown: '# c' });
+    expect(repoDb.getLatestBrief()).toEqual({
+      sessionId: 'session-b',
+      generatedAt: 3000,
+      markdown: '# b',
+    });
   });
 
   test('transaction() commits all writes on success', () => {

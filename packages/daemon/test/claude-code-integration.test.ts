@@ -340,6 +340,74 @@ describe('a full Claude Code hook-driven session', () => {
     }
   });
 
+  test('SessionStart returns a stored brief as additionalContext', async () => {
+    mkdirSync(join(repoDir, '.driftlock'), { recursive: true });
+    const registry = openRegistryDb(join(home, 'registry.sqlite'));
+    registry.upsertRepo({
+      repoId: 'repo-1',
+      root: repoDir,
+      name: 'repo',
+      agents: ['claude-code'],
+      registeredAt: Date.now(),
+      lastSeen: Date.now(),
+    });
+    registry.close();
+
+    const repoDb = openRepoDb(repoDbPath(repoDir));
+    repoDb.upsertBrief({
+      sessionId: 'prior-session',
+      generatedAt: Date.now(),
+      markdown: '# Resume brief\nfix the flaky test',
+    });
+    repoDb.close();
+
+    daemon = await startDaemon({
+      driftlockHomeDir: home,
+      adapters: { 'claude-code': new ClaudeCodeAdapter() },
+      logger: noopLogger,
+    });
+
+    const res = await postHook(daemon.port, daemon.token, 'SessionStart', {
+      session_id: 'new-sess',
+      cwd: repoDir,
+      hook_event_name: 'SessionStart',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      hookSpecificOutput?: { hookEventName: string; additionalContext: string };
+    };
+    expect(body.hookSpecificOutput?.hookEventName).toBe('SessionStart');
+    expect(body.hookSpecificOutput?.additionalContext).toContain('fix the flaky test');
+  });
+
+  test('SessionStart with no stored brief yet returns no additionalContext', async () => {
+    mkdirSync(join(repoDir, '.driftlock'), { recursive: true });
+    const registry = openRegistryDb(join(home, 'registry.sqlite'));
+    registry.upsertRepo({
+      repoId: 'repo-1',
+      root: repoDir,
+      name: 'repo',
+      agents: ['claude-code'],
+      registeredAt: Date.now(),
+      lastSeen: Date.now(),
+    });
+    registry.close();
+
+    daemon = await startDaemon({
+      driftlockHomeDir: home,
+      adapters: { 'claude-code': new ClaudeCodeAdapter() },
+      logger: noopLogger,
+    });
+
+    const res = await postHook(daemon.port, daemon.token, 'SessionStart', {
+      session_id: 'new-sess',
+      cwd: repoDir,
+      hook_event_name: 'SessionStart',
+    });
+    const body = (await res.json()) as { hookSpecificOutput?: unknown };
+    expect(body.hookSpecificOutput).toBeUndefined();
+  });
+
   test('rejects hooks for a repo that was never registered', async () => {
     daemon = await startDaemon({
       driftlockHomeDir: home,

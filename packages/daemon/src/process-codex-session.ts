@@ -7,6 +7,7 @@ import {
 import type { Logger, RegistryStore, Repo } from '@driftlock/core';
 import { noopLogger, openRepoDb, pathsEqual, repoDbPath, syncSessionIndex } from '@driftlock/core';
 import { analyzeAndStore } from './analyze-and-store.ts';
+import { generateBrief } from './generate-brief.ts';
 
 // Architecture doc §4.2 — "Analyzer runner. Triggered on session_end. Runs
 // all enabled analyzers, writes findings [...] and to the store." A Codex
@@ -46,6 +47,7 @@ export async function processCodexSessionFile(
     const findingsCount = synced.finalized
       ? await analyzeAndStore(synced.sessionId, repo.root, repoDb, logger)
       : 0;
+    if (synced.finalized) await generateBrief(synced.sessionId, repo.root, repoDb, logger);
     syncSessionIndex(registryDb, repoDb, repo.repoId, synced.sessionId);
     registryDb.upsertRepo({ ...repo, lastSeen: Date.now() });
     logger.info(
