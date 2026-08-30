@@ -43,6 +43,14 @@ function toEvent(row: Record<string, unknown>): Event {
   } as Event;
 }
 
+function toBrief(row: Record<string, unknown>): Brief {
+  return {
+    sessionId: row.session_id as string,
+    generatedAt: row.generated_at as number,
+    markdown: row.markdown as string,
+  };
+}
+
 function toFinding(row: Record<string, unknown>): Finding {
   return {
     id: row.id as string,
@@ -646,11 +654,20 @@ export class RepoStore {
       | Record<string, unknown>
       | undefined;
     if (!row) return null;
-    return {
-      sessionId: row.session_id as string,
-      generatedAt: row.generated_at as number,
-      markdown: row.markdown as string,
-    };
+    return toBrief(row);
+  }
+
+  /**
+   * The brief a session starting *now* should see — the most recently
+   * generated brief in this repo, regardless of which past session it was
+   * generated from. See brief.ts's note on why `briefs.session_id` can't be
+   * "the next session" directly.
+   */
+  getLatestBrief(): Brief | null {
+    const row = this.db.query('SELECT * FROM briefs ORDER BY generated_at DESC LIMIT 1').get() as
+      | Record<string, unknown>
+      | undefined;
+    return row ? toBrief(row) : null;
   }
 }
 

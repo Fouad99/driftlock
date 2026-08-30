@@ -133,3 +133,65 @@ describe('mapPostToolUse — generic tool', () => {
     ).not.toThrow();
   });
 });
+
+describe('mapPostToolUse — TodoWrite', () => {
+  test('produces one plan_item per todo, keyed by list position', () => {
+    const events = mapPostToolUse(
+      'TodoWrite',
+      {
+        todos: [
+          {
+            content: 'write the limiter',
+            status: 'in_progress',
+            activeForm: 'Writing the limiter',
+          },
+          { content: 'add tests', status: 'pending', activeForm: 'Adding tests' },
+        ],
+      },
+      undefined,
+      undefined,
+      1000,
+      'sess-1',
+    );
+    expect(events).toHaveLength(2);
+    expect(events[0]?.kind).toBe('plan_item');
+    if (events[0]?.kind !== 'plan_item' || events[1]?.kind !== 'plan_item') {
+      throw new Error('unreachable');
+    }
+    expect(events[0].payload).toEqual({
+      id: 'todo-0',
+      text: 'write the limiter',
+      status: 'in_progress',
+    });
+    expect(events[1].payload).toEqual({ id: 'todo-1', text: 'add tests', status: 'pending' });
+  });
+
+  test('skips todos missing content or status rather than guessing', () => {
+    const events = mapPostToolUse(
+      'TodoWrite',
+      {
+        todos: [
+          { content: 'ok', status: 'pending' },
+          { status: 'pending' },
+          { content: 'no status' },
+        ],
+      },
+      undefined,
+      undefined,
+      1000,
+      'sess-1',
+    );
+    expect(events).toHaveLength(1);
+    if (events[0]?.kind !== 'plan_item') throw new Error('unreachable');
+    expect(events[0].payload.text).toBe('ok');
+  });
+
+  test('never throws when todos is missing or malformed', () => {
+    expect(() =>
+      mapPostToolUse('TodoWrite', {}, undefined, undefined, 1000, 'sess-1'),
+    ).not.toThrow();
+    expect(
+      mapPostToolUse('TodoWrite', { todos: 'not an array' }, undefined, undefined, 1000, 'sess-1'),
+    ).toEqual([]);
+  });
+});

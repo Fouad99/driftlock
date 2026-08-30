@@ -36,7 +36,14 @@ export type AdapterOutput =
       type: 'resume_brief' | 'pre_edit_verdict';
       sessionId: string;
       data: unknown;
-      reply: (r: unknown) => void;
+      // Called by the daemon (which owns the store this adapter's `onHook`
+      // never gets) with the answer — a `Brief | null` for `resume_brief`,
+      // a verdict for `pre_edit_verdict` (M6). Returns the adapter-specific
+      // JSON shape to merge into the hook's HTTP/stdout response (e.g.
+      // Claude Code's `{ hookSpecificOutput: { additionalContext } }`) — the
+      // formatting is the adapter's job since it's the one that knows its
+      // own agent's hook response contract.
+      reply: (result: unknown) => unknown;
     };
 
 export interface AdapterCapabilities {

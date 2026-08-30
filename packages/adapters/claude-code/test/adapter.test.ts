@@ -27,13 +27,41 @@ describe('ClaudeCodeAdapter.onHook — SessionStart', () => {
       }),
       ctx,
     );
-    expect(outputs).toHaveLength(1);
+    expect(outputs).toHaveLength(2);
     expect(outputs[0]?.kind).toBe('session_start');
     if (outputs[0]?.kind !== 'session_start') throw new Error('unreachable');
     expect(outputs[0].session.id).toBe('claude-sess-1');
     expect(outputs[0].session.agentSession).toBe('claude-sess-1');
     expect(outputs[0].session.agent).toBe('claude-code');
     expect(outputs[0].session.source).toBe('hooks');
+
+    expect(outputs[1]?.kind).toBe('request');
+    if (outputs[1]?.kind !== 'request') throw new Error('unreachable');
+    expect(outputs[1].type).toBe('resume_brief');
+    expect(outputs[1].sessionId).toBe('claude-sess-1');
+  });
+
+  test('resume_brief reply formats a brief as Claude Code additionalContext', async () => {
+    const outputs = await adapter.onHook(
+      envelope('SessionStart', {
+        session_id: 'claude-sess-1',
+        cwd: '/repo',
+        hook_event_name: 'SessionStart',
+      }),
+      ctx,
+    );
+    const request = outputs.find((o) => o.kind === 'request');
+    if (request?.kind !== 'request') throw new Error('unreachable');
+
+    const withBrief = request.reply({
+      sessionId: 'claude-sess-1',
+      generatedAt: 1000,
+      markdown: '# Resume brief\nhello',
+    }) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+    expect(withBrief.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(withBrief.hookSpecificOutput.additionalContext).toContain('hello');
+
+    expect(request.reply(null)).toEqual({});
   });
 
   test('returns nothing for a malformed payload rather than throwing', async () => {

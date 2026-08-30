@@ -1,5 +1,6 @@
-import type { Event, Finding, Session } from '@driftlock/core';
+import type { Brief, Event, Finding, Session } from '@driftlock/core';
 import type { DoctorCheck } from './doctor.ts';
+import type { SessionRow } from './sessions.ts';
 import type { StatusRow } from './status.ts';
 
 function pad(s: string, width: number): string {
@@ -76,6 +77,25 @@ const STATUS_ICON: Record<DoctorCheck['status'], string> = { ok: '✓', warn: '!
 
 export function formatDoctor(checks: DoctorCheck[]): string {
   return checks.map((c) => `  ${STATUS_ICON[c.status]}  ${pad(c.name, 24)} ${c.detail}`).join('\n');
+}
+
+export function formatSessions(rows: SessionRow[]): string {
+  if (rows.length === 0) return 'no sessions found for this repo yet';
+
+  const cols = { id: 28, agent: 12, duration: 12, findings: 15 };
+  const header = `${pad('session', cols.id)} ${pad('agent', cols.agent)} ${pad('duration', cols.duration)} open findings`;
+  const lines = [header];
+  for (const { session, openFindings } of rows) {
+    lines.push(
+      `${pad(session.id, cols.id)} ${pad(session.agent, cols.agent)} ${pad(formatDuration(session), cols.duration)} ${openFindings}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+export function formatBrief(brief: Brief | null): string {
+  if (!brief) return 'no resume brief yet — one is generated when a session ends';
+  return brief.markdown;
 }
 
 export function formatExplain(findings: Finding[], events: Event[]): string {

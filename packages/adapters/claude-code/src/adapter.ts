@@ -1,6 +1,7 @@
 import type {
   Adapter,
   AdapterOutput,
+  Brief,
   HookEnvelope,
   InstallResult,
   NewEvent,
@@ -22,6 +23,24 @@ import { mapPostToolUse } from './tool-mapping.ts';
 // format to fall back on (the hooks doc explicitly says the transcript file
 // "is written asynchronously and may lag" and to prefer `last_assistant_message`
 // on Stop instead — so that's what this adapter does).
+
+// M2 §8.1 — resume brief injection. Keeps the injected brief safely under
+// Claude Code's context-spill threshold even though `generateBrief` already
+// caps content to ≤60 lines; a defensive backstop, not the primary control
+// (that's `install.ts`'s `additionalContextLimit`, a Claude Code-side cap).
+const ADDITIONAL_CONTEXT_CHAR_LIMIT = 8000;
+
+function formatResumeBrief(result: unknown): unknown {
+  const brief = result as Brief | null;
+  if (!brief) return {};
+  const text =
+    brief.markdown.length > ADDITIONAL_CONTEXT_CHAR_LIMIT
+      ? `${brief.markdown.slice(0, ADDITIONAL_CONTEXT_CHAR_LIMIT)}…`
+      : brief.markdown;
+  return {
+    hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text },
+  };
+}
 export class ClaudeCodeAdapter implements Adapter {
   readonly agent = 'claude-code' as const;
   readonly capabilities = { resumeInject: true, preEditVerdict: true, liveEvents: true };
@@ -56,6 +75,13 @@ export class ClaudeCodeAdapter implements Adapter {
               costUsd: null,
               source: 'hooks',
             },
+          },
+          {
+            kind: 'request',
+            type: 'resume_brief',
+            sessionId: session_id,
+            data: null,
+            reply: formatResumeBrief,
           },
         ];
       }

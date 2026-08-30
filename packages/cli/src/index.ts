@@ -1,11 +1,20 @@
 #!/usr/bin/env bun
 import type { AgentId, Logger } from '@driftlock/core';
 import { createConsoleSink, createLogger, noopLogger } from '@driftlock/core';
+import { runBrief } from './brief.ts';
 import { runDaemon } from './daemon-command.ts';
 import { runDoctor } from './doctor.ts';
-import { formatDoctor, formatExplain, formatReport, formatStatus } from './format.ts';
+import {
+  formatBrief,
+  formatDoctor,
+  formatExplain,
+  formatReport,
+  formatSessions,
+  formatStatus,
+} from './format.ts';
 import { runInit } from './init.ts';
 import { runReport } from './report.ts';
+import { runSessions } from './sessions.ts';
 import { runStatus } from './status.ts';
 
 function parseFlags(argv: string[]): { positional: string[]; flags: Map<string, string | true> } {
@@ -86,6 +95,51 @@ async function cmdReport(argv: string[]): Promise<number> {
   return 0;
 }
 
+async function cmdSessions(argv: string[]): Promise<number> {
+  const { flags } = parseFlags(argv);
+  const repoFlag = flags.get('repo');
+  const lastFlag = flags.get('last');
+
+  const rows = await runSessions({
+    cwd: process.cwd(),
+    logger: loggerFor(flags),
+    ...(typeof repoFlag === 'string' && { repoRoot: repoFlag }),
+    ...(typeof lastFlag === 'string' && { last: Number(lastFlag) }),
+  });
+
+  if (flags.get('json')) {
+    console.log(JSON.stringify(rows, null, 2));
+    return 0;
+  }
+
+  console.log(formatSessions(rows));
+  return 0;
+}
+
+async function cmdBrief(argv: string[]): Promise<number> {
+  const { flags } = parseFlags(argv);
+  const repoFlag = flags.get('repo');
+
+  const result = await runBrief({
+    cwd: process.cwd(),
+    logger: loggerFor(flags),
+    write: !!flags.get('write'),
+    ...(typeof repoFlag === 'string' && { repoRoot: repoFlag }),
+  });
+
+  if (flags.get('json')) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+
+  console.log(formatBrief(result.brief));
+  if (result.written) {
+    for (const w of result.written)
+      console.log(`  wrote ${w.path}${w.created ? ' (created)' : ''}`);
+  }
+  return 0;
+}
+
 async function cmdStatus(argv: string[]): Promise<number> {
   const { flags } = parseFlags(argv);
   const rows = await runStatus();
@@ -140,6 +194,10 @@ async function main(): Promise<number> {
         return await cmdInit(rest);
       case 'report':
         return await cmdReport(rest);
+      case 'sessions':
+        return await cmdSessions(rest);
+      case 'brief':
+        return await cmdBrief(rest);
       case 'status':
         return await cmdStatus(rest);
       case 'doctor':
@@ -149,7 +207,7 @@ async function main(): Promise<number> {
       case undefined:
       case '--help':
       case '-h':
-        console.log('Usage: driftlock <init|report|status|doctor|daemon> [options]');
+        console.log('Usage: driftlock <init|report|sessions|brief|status|doctor|daemon> [options]');
         return command === undefined ? 1 : 0;
       default:
         console.error(`Unknown command: ${command}`);
@@ -165,4 +223,4 @@ if (import.meta.main) {
   main().then((code) => process.exit(code));
 }
 
-export { cmdInit, cmdReport, cmdStatus, cmdDoctor, cmdDaemon, main };
+export { cmdInit, cmdReport, cmdSessions, cmdBrief, cmdStatus, cmdDoctor, cmdDaemon, main };

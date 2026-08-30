@@ -126,6 +126,12 @@ export { createServer } from './server.ts';
 export { drainSpool } from './spool.ts';
 export { startCodexWatcher } from './codex-watcher.ts';
 export { analyzeAndStore } from './analyze-and-store.ts';
+export { generateBrief } from './generate-brief.ts';
+export {
+  writeResumeBriefToRepo,
+  writeFencedBlock,
+  type WriteResumeBlockResult,
+} from './resume-block.ts';
 export {
   readDaemonJson,
   writeDaemonJson,

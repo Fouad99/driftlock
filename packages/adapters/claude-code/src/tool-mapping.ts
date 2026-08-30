@@ -150,6 +150,30 @@ function mapRead(toolInput: unknown, ts: number, sessionId: string): NewEvent[] 
   return [{ sessionId, ts, ...parsed } as NewEvent];
 }
 
+/**
+ * Maps `TodoWrite`'s `{ todos: [{content, status, activeForm?}] }` input to
+ * one `plan_item` per todo. Claude Code's todos have no stable id of their
+ * own — `TodoWrite` sends its *whole* current list on every call, so the
+ * item's position is the closest thing to a stable identity across calls
+ * (unlike a reordered list, a growing/shrinking one still keeps each
+ * existing item's index). `content`/`status` are read defensively; an item
+ * missing either is skipped rather than guessed at.
+ */
+function mapTodoWrite(toolInput: unknown, ts: number, sessionId: string): NewEvent[] {
+  const todos = record(toolInput).todos;
+  if (!Array.isArray(todos)) return [];
+  const events: NewEvent[] = [];
+  todos.forEach((t, i) => {
+    const todo = record(t);
+    const text = str(todo.content);
+    const status = str(todo.status);
+    if (text === undefined || status === undefined) return;
+    const parsed = parseEventPayload('plan_item', { id: `todo-${i}`, text, status });
+    events.push({ sessionId, ts, ...parsed } as NewEvent);
+  });
+  return events;
+}
+
 function mapGeneric(
   toolName: string,
   toolInput: unknown,
@@ -191,6 +215,8 @@ export function mapPostToolUse(
       return mapBash(toolInput, toolOutput, callId, ts, sessionId);
     case 'Read':
       return mapRead(toolInput, ts, sessionId);
+    case 'TodoWrite':
+      return mapTodoWrite(toolInput, ts, sessionId);
     default:
       return mapGeneric(toolName, toolInput, toolOutput, callId, ts, sessionId);
   }
