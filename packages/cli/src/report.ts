@@ -1,11 +1,12 @@
 import { join } from 'node:path';
 import { findAndIngestCodexSessions } from '@driftlock/adapter-codex';
 import { DETERMINISTIC_ANALYZERS, runAnalyzers } from '@driftlock/analyzers';
-import type { Event, Finding, Session } from '@driftlock/core';
+import type { Event, Finding, Logger, Session } from '@driftlock/core';
 import {
   buildGitContext,
   driftlockHome,
   findRepoRoot,
+  noopLogger,
   openRegistryDb,
   openRepoDb,
   readRepoMeta,
@@ -17,6 +18,7 @@ import { deriveTask } from './task.ts';
 export interface ReportOptions {
   cwd: string;
   sessionId?: string;
+  logger?: Logger;
 }
 
 export interface ReportResult {
@@ -27,12 +29,15 @@ export interface ReportResult {
 }
 
 export async function runReport(opts: ReportOptions): Promise<ReportResult> {
+  const logger = opts.logger ?? noopLogger;
   const repoRoot = findRepoRoot(opts.cwd);
   if (!repoRoot) throw new Error(`no git repository found at or above ${opts.cwd}`);
 
   const repoDb = openRepoDb(repoDbPath(repoRoot));
   try {
-    await findAndIngestCodexSessions(repoRoot, repoDb);
+    const ingested = await findAndIngestCodexSessions(repoRoot, repoDb);
+    if (ingested.length > 0)
+      logger.debug('ingested new codex sessions', { count: ingested.length });
 
     let session: Session | null;
     if (opts.sessionId) {
@@ -46,6 +51,7 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
         );
       session = latest;
     }
+    logger.debug('reporting on session', { sessionId: session.id, agent: session.agent });
 
     const events = repoDb.getEvents(session.id);
     const task = deriveTask(session, events);
@@ -54,14 +60,22 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
       .listFindings({ open: true })
       .filter((f) => f.sessionId !== session.id);
 
-    const newFindings = await runAnalyzers(DETERMINISTIC_ANALYZERS, {
-      session,
-      events,
-      previousFindings,
-      ...(task && { task }),
-      ...(git && { git }),
-    });
+    const newFindings = await runAnalyzers(
+      DETERMINISTIC_ANALYZERS,
+      {
+        session,
+        events,
+        previousFindings,
+        ...(task && { task }),
+        ...(git && { git }),
+      },
+      logger,
+    );
     const findings = newFindings.map((f) => repoDb.createFinding(f));
+    logger.debug('analyzers finished', {
+      eventCount: events.length,
+      findingsCount: findings.length,
+    });
 
     const repoId = readRepoMeta(repoRoot)?.repoId;
     if (repoId) {

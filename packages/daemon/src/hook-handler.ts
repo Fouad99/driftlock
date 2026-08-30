@@ -1,5 +1,5 @@
-import type { Adapter, HookEnvelope, RegistryStore } from '@driftlock/core';
-import { openRepoDb, pathsEqual, repoDbPath, syncSessionIndex } from '@driftlock/core';
+import type { Adapter, HookEnvelope, Logger, RegistryStore } from '@driftlock/core';
+import { noopLogger, openRepoDb, pathsEqual, repoDbPath, syncSessionIndex } from '@driftlock/core';
 import { analyzeAndStore } from './analyze-and-store.ts';
 import { applyAdapterOutput } from './apply-adapter-output.ts';
 import type { ValidatedHookEnvelope } from './hook-envelope.ts';
@@ -25,9 +25,11 @@ export async function handleHookEnvelope(
   envelope: ValidatedHookEnvelope,
   adapters: Partial<Record<HookEnvelope['agent'], Adapter>>,
   registryDb: RegistryStore,
+  logger: Logger = noopLogger,
 ): Promise<HookHandlerResult> {
   const adapter = adapters[envelope.agent];
   if (!adapter?.onHook) {
+    logger.debug('no hook handler registered for this agent', { agent: envelope.agent });
     return {
       status: 200,
       body: { ok: true, handled: false, note: `no hook handler registered for ${envelope.agent}` },
@@ -36,6 +38,10 @@ export async function handleHookEnvelope(
 
   const repo = registryDb.listRepos().find((r) => pathsEqual(r.root, envelope.cwd));
   if (!repo) {
+    logger.warn('hook cwd matches no registered repo', {
+      agent: envelope.agent,
+      cwd: envelope.cwd,
+    });
     return {
       status: 200,
       body: { ok: true, handled: false, note: `no registered repo matches cwd ${envelope.cwd}` },
@@ -65,14 +71,26 @@ export async function handleHookEnvelope(
     for (const output of outputs) {
       if (output.kind === 'request') continue; // M2/M4/M6
       const applied = applyAdapterOutput(output, repoDb);
-      if (!applied) continue;
+      if (!applied) {
+        if (output.kind !== 'session_start') {
+          logger.warn('output could not be applied — its session_start may have been missed', {
+            outputKind: output.kind,
+            sessionId:
+              output.kind === 'events' || output.kind === 'session_end'
+                ? output.sessionId
+                : undefined,
+          });
+        }
+        continue;
+      }
       handledAny = true;
       touchedSessionIds.add(applied.sessionId);
       if (applied.sessionEnded) endedSessionIds.add(applied.sessionId);
     }
 
     for (const sessionId of endedSessionIds) {
-      await analyzeAndStore(sessionId, repo.root, repoDb);
+      const findingsCount = await analyzeAndStore(sessionId, repo.root, repoDb, logger);
+      logger.info('analyzed session on end', { repoId: repo.repoId, sessionId, findingsCount });
     }
     for (const sessionId of touchedSessionIds) {
       syncSessionIndex(registryDb, repoDb, repo.repoId, sessionId);

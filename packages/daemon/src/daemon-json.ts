@@ -18,6 +18,11 @@ export function daemonJsonPath(driftlockHomeDir: string): string {
   return join(driftlockHomeDir, 'daemon.json');
 }
 
+// Usage doc "Where things live" — `<home>/daemon.log`.
+export function daemonLogPath(driftlockHomeDir: string): string {
+  return join(driftlockHomeDir, 'daemon.log');
+}
+
 export function writeDaemonJson(driftlockHomeDir: string, info: DaemonJson): void {
   writeFileSync(daemonJsonPath(driftlockHomeDir), `${JSON.stringify(info, null, 2)}\n`, {
     mode: 0o600,

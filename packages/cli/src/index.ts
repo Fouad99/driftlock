@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import type { AgentId } from '@driftlock/core';
+import type { AgentId, Logger } from '@driftlock/core';
+import { createConsoleSink, createLogger, noopLogger } from '@driftlock/core';
 import { runDaemon } from './daemon-command.ts';
 import { runDoctor } from './doctor.ts';
 import { formatDoctor, formatExplain, formatReport, formatStatus } from './format.ts';
@@ -28,12 +29,22 @@ function parseFlags(argv: string[]): { positional: string[]; flags: Map<string, 
   return { positional, flags };
 }
 
+/** `--verbose` turns on debug-level console logging for the command; otherwise the CLI stays silent apart from its normal output. */
+function loggerFor(flags: Map<string, string | true>): Logger {
+  if (!flags.get('verbose')) return noopLogger;
+  return createLogger({ component: 'cli', sinks: [createConsoleSink()], level: 'debug' });
+}
+
 async function cmdInit(argv: string[]): Promise<number> {
   const { flags } = parseFlags(argv);
   const agentsFlag = flags.get('agents');
   const agents = typeof agentsFlag === 'string' ? (agentsFlag.split(',') as AgentId[]) : undefined;
 
-  const result = await runInit({ cwd: process.cwd(), ...(agents && { agents }) });
+  const result = await runInit({
+    cwd: process.cwd(),
+    logger: loggerFor(flags),
+    ...(agents && { agents }),
+  });
 
   if (flags.get('json')) {
     console.log(JSON.stringify(result, null, 2));
@@ -57,7 +68,11 @@ async function cmdReport(argv: string[]): Promise<number> {
   const { positional, flags } = parseFlags(argv);
   const sessionId = positional[0];
 
-  const result = await runReport({ cwd: process.cwd(), ...(sessionId && { sessionId }) });
+  const result = await runReport({
+    cwd: process.cwd(),
+    logger: loggerFor(flags),
+    ...(sessionId && { sessionId }),
+  });
 
   if (flags.get('json')) {
     console.log(JSON.stringify({ session: result.session, findings: result.findings }, null, 2));
@@ -102,7 +117,10 @@ async function cmdDaemon(argv: string[]): Promise<number> {
   const portFlag = flags.get('port');
   const port = typeof portFlag === 'string' ? Number(portFlag) : undefined;
 
-  const daemon = await runDaemon(port !== undefined ? { port } : {});
+  const daemon = await runDaemon({
+    ...(port !== undefined && { port }),
+    ...(flags.get('verbose') && { logLevel: 'debug' as const }),
+  });
 
   return new Promise<number>((resolve) => {
     const shutdown = () => {

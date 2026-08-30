@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openRegistryDb, openRepoDb, repoDbPath } from '@driftlock/core';
+import { noopLogger, openRegistryDb, openRepoDb, repoDbPath } from '@driftlock/core';
 import { readDaemonJson } from '../src/daemon-json.ts';
 import { type DaemonHandle, startDaemon } from '../src/index.ts';
 
@@ -54,7 +54,7 @@ function writeCodexFixture(name: string, fixture: string, cwd: string): void {
 
 describe('startDaemon', () => {
   test('writes daemon.json with a working port and token', async () => {
-    daemon = await startDaemon({ driftlockHomeDir: home });
+    daemon = await startDaemon({ driftlockHomeDir: home, logger: noopLogger });
     const json = readDaemonJson(home);
     expect(json).not.toBeNull();
     expect(json?.port).toBe(daemon.port);
@@ -70,7 +70,7 @@ describe('startDaemon', () => {
     const envelope = { agent: 'codex', event: 'test', cwd: '/repo', receivedAt: 1, payload: {} };
     writeFileSync(join(spoolPath, 'codex.jsonl'), `${JSON.stringify(envelope)}\n`);
 
-    daemon = await startDaemon({ driftlockHomeDir: home });
+    daemon = await startDaemon({ driftlockHomeDir: home, logger: noopLogger });
 
     const { existsSync } = await import('node:fs');
     expect(existsSync(join(spoolPath, 'codex.jsonl'))).toBe(false);
@@ -92,7 +92,7 @@ describe('startDaemon', () => {
 
     writeCodexFixture('sess.jsonl', 'session-2.jsonl', repoDir);
 
-    daemon = await startDaemon({ driftlockHomeDir: home });
+    daemon = await startDaemon({ driftlockHomeDir: home, logger: noopLogger });
 
     const repoDb = openRepoDb(repoDbPath(repoDir));
     try {

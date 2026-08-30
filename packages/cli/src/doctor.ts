@@ -9,7 +9,8 @@ import {
   readRepoMeta,
   repoDbPath,
 } from '@driftlock/core';
-import { daemonJsonPath, readDaemonJson } from '@driftlock/daemon';
+import type { LogEntry } from '@driftlock/core';
+import { daemonJsonPath, daemonLogPath, readDaemonJson } from '@driftlock/daemon';
 
 // Usage doc — `driftlock doctor`: "Checks: daemon running and reachable;
 // hooks installed for each agent; transcript directories exist; registry and
@@ -103,6 +104,39 @@ async function checkHookLatency(port: number, token: string): Promise<DoctorChec
   } catch {
     return { name: 'hook round-trip', status: 'fail', detail: 'request failed' };
   }
+}
+
+const LOG_TAIL_LINES = 500;
+
+function checkDaemonLog(): DoctorCheck {
+  const path = daemonLogPath(driftlockHome());
+  if (!existsSync(path)) {
+    return { name: 'daemon.log', status: 'warn', detail: `no log file yet at ${path}` };
+  }
+
+  const lines = readFileSync(path, 'utf-8').trim().split('\n').slice(-LOG_TAIL_LINES);
+  let lastError: LogEntry | undefined;
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line) as LogEntry;
+      if (entry.level === 'error') lastError = entry;
+    } catch {
+      // a malformed line in our own log is odd but shouldn't break doctor
+    }
+  }
+
+  if (!lastError) {
+    return {
+      name: 'daemon.log',
+      status: 'ok',
+      detail: `no errors in the last ${lines.length} line(s)`,
+    };
+  }
+  return {
+    name: 'daemon.log',
+    status: 'warn',
+    detail: `most recent error (${new Date(lastError.ts).toISOString()}): ${lastError.msg}`,
+  };
 }
 
 function checkCodexTranscriptDir(): DoctorCheck {
@@ -210,6 +244,7 @@ export async function runDoctor(cwd: string): Promise<DoctorReport> {
     checks.push(await checkHookLatency(daemonResult.port, daemonResult.token));
   }
 
+  checks.push(checkDaemonLog());
   checks.push(checkCodexTranscriptDir());
   checks.push(...checkRepoChecks(cwd));
 

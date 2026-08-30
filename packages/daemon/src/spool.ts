@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Logger } from '@driftlock/core';
+import { noopLogger } from '@driftlock/core';
 import { HookEnvelopeSchema, type ValidatedHookEnvelope } from './hook-envelope.ts';
 
 // Architecture doc §4.1/§10 — hook client appends to `<driftlock-home>/spool/<agent>.jsonl`
@@ -18,6 +20,7 @@ export interface DrainResult {
 export async function drainSpool(
   driftlockHomeDir: string,
   handle: (envelope: ValidatedHookEnvelope) => Promise<unknown>,
+  logger: Logger = noopLogger,
 ): Promise<DrainResult> {
   const dir = spoolDir(driftlockHomeDir);
   if (!existsSync(dir)) return { processed: 0, failed: 0 };
@@ -43,14 +46,21 @@ export async function drainSpool(
       })();
       if (!parsed.success) {
         failed += 1;
+        logger.warn('dropped malformed spool line', { file: name });
         continue; // malformed line: drop rather than retry forever
       }
       try {
         await handle(parsed.data);
         processed += 1;
-      } catch {
+      } catch (err) {
         failed += 1;
         kept.push(line); // transient failure: keep for the next drain
+        logger.error('spool line failed to apply, will retry next drain', {
+          file: name,
+          agent: parsed.data.agent,
+          event: parsed.data.event,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
@@ -59,6 +69,10 @@ export async function drainSpool(
     } else {
       unlinkSync(path);
     }
+  }
+
+  if (processed > 0 || failed > 0) {
+    logger.info('spool drain complete', { processed, failed });
   }
 
   return { processed, failed };

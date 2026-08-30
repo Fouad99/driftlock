@@ -3,8 +3,8 @@ import {
   ingestCodexTranscript,
   readCodexSessionMeta,
 } from '@driftlock/adapter-codex';
-import type { RegistryStore, Repo } from '@driftlock/core';
-import { openRepoDb, pathsEqual, repoDbPath, syncSessionIndex } from '@driftlock/core';
+import type { Logger, RegistryStore, Repo } from '@driftlock/core';
+import { noopLogger, openRepoDb, pathsEqual, repoDbPath, syncSessionIndex } from '@driftlock/core';
 import { analyzeAndStore } from './analyze-and-store.ts';
 
 // Architecture doc §4.2 — "Analyzer runner. Triggered on session_end. Runs
@@ -25,6 +25,7 @@ export interface ProcessResult {
 export async function processCodexSessionFile(
   file: SessionFile,
   registryDb: RegistryStore,
+  logger: Logger = noopLogger,
 ): Promise<ProcessResult | null> {
   const meta = readCodexSessionMeta(file.path);
   if (!meta) return null;
@@ -36,10 +37,21 @@ export async function processCodexSessionFile(
     const sessionId = await ingestCodexTranscript(file, repo.root, repoDb);
     if (!sessionId) return null; // already ingested, or not a valid transcript
 
-    const findingsCount = await analyzeAndStore(sessionId, repo.root, repoDb);
+    const findingsCount = await analyzeAndStore(sessionId, repo.root, repoDb, logger);
     syncSessionIndex(registryDb, repoDb, repo.repoId, sessionId);
     registryDb.upsertRepo({ ...repo, lastSeen: Date.now() });
+    logger.info('ingested and analyzed codex session', {
+      repoId: repo.repoId,
+      sessionId,
+      findingsCount,
+    });
     return { repoId: repo.repoId, sessionId, findingsCount };
+  } catch (err) {
+    logger.error('failed to process codex session file', {
+      file: file.path,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   } finally {
     repoDb.close();
   }

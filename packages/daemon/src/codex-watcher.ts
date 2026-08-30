@@ -1,6 +1,7 @@
 import { type FSWatcher, watch } from 'node:fs';
 import { type SessionFile, codexSessionsDir, listSessionFiles } from '@driftlock/adapter-codex';
-import type { RegistryStore } from '@driftlock/core';
+import type { Logger, RegistryStore } from '@driftlock/core';
+import { noopLogger } from '@driftlock/core';
 import { processCodexSessionFile } from './process-codex-session.ts';
 
 // Architecture doc §4.2 — "Transcript watcher [...] Uses polling fallback
@@ -17,6 +18,7 @@ export interface CodexWatcherOptions {
   registryDb: RegistryStore;
   onProcessed?: (result: NonNullable<Awaited<ReturnType<typeof processCodexSessionFile>>>) => void;
   onModeDetected?: (mode: WatcherMode) => void;
+  logger?: Logger;
 }
 
 export interface CodexWatcherHandle {
@@ -27,25 +29,35 @@ export function startCodexWatcher(opts: CodexWatcherOptions): CodexWatcherHandle
   const intervalMs = opts.intervalMs ?? 2000;
   const dir = codexSessionsDir();
   const seen = new Map<string, number>(); // path -> mtimeMs
+  const logger = opts.logger ?? noopLogger;
 
   let stopped = false;
 
   const scan = async () => {
-    const files = listSessionFiles(dir);
-    const changed: SessionFile[] = [];
-    for (const file of files) {
-      const prev = seen.get(file.path);
-      if (prev === undefined || prev !== file.mtimeMs) {
-        changed.push(file);
+    try {
+      const files = listSessionFiles(dir);
+      const changed: SessionFile[] = [];
+      for (const file of files) {
+        const prev = seen.get(file.path);
+        if (prev === undefined || prev !== file.mtimeMs) {
+          changed.push(file);
+        }
+        seen.set(file.path, file.mtimeMs);
       }
-      seen.set(file.path, file.mtimeMs);
-    }
-    if (changed.length === 0) return;
+      if (changed.length === 0) return;
 
-    for (const file of changed) {
-      if (stopped) return;
-      const result = await processCodexSessionFile(file, opts.registryDb);
-      if (result) opts.onProcessed?.(result);
+      for (const file of changed) {
+        if (stopped) return;
+        const result = await processCodexSessionFile(file, opts.registryDb, logger);
+        if (result) opts.onProcessed?.(result);
+      }
+    } catch (err) {
+      // This runs detached (setInterval / fs.watch callback) — without this
+      // catch, a thrown error here becomes an unhandled rejection and the
+      // watcher silently stops working with no trace anywhere.
+      logger.error('codex watcher scan failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   };
 
@@ -54,8 +66,10 @@ export function startCodexWatcher(opts: CodexWatcherOptions): CodexWatcherHandle
     fsWatcher = watch(dir, { recursive: true }, () => {
       void scan();
     });
+    logger.debug('codex watcher using native fs.watch', { dir });
     opts.onModeDetected?.('native');
   } catch {
+    logger.debug('codex watcher falling back to polling only', { dir, intervalMs });
     opts.onModeDetected?.('polling');
   }
 

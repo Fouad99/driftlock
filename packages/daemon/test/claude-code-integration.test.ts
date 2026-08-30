@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeCodeAdapter } from '@driftlock/adapter-claude-code';
-import { openRegistryDb, openRepoDb, repoDbPath } from '@driftlock/core';
+import { noopLogger, openRegistryDb, openRepoDb, repoDbPath } from '@driftlock/core';
 import { type DaemonHandle, startDaemon } from '../src/index.ts';
 
 let base: string;
@@ -61,6 +61,7 @@ describe('a full Claude Code hook-driven session', () => {
     daemon = await startDaemon({
       driftlockHomeDir: home,
       adapters: { 'claude-code': new ClaudeCodeAdapter() },
+      logger: noopLogger,
     });
     const { port, token } = daemon;
     const sessionId = 'claude-sess-e2e';
@@ -137,6 +138,7 @@ describe('a full Claude Code hook-driven session', () => {
     daemon = await startDaemon({
       driftlockHomeDir: home,
       adapters: { 'claude-code': new ClaudeCodeAdapter() },
+      logger: noopLogger,
     });
     const res = await postHook(daemon.port, daemon.token, 'SessionStart', {
       session_id: 'x',

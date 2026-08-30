@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { noopLogger } from '@driftlock/core';
 import { type DaemonHandle, startDaemon } from '@driftlock/daemon';
 import { runDoctor } from '../src/doctor.ts';
 import { runInit } from '../src/init.ts';
@@ -46,7 +47,10 @@ describe('runDoctor', () => {
   });
 
   test('reports the daemon as ok and measures hook latency when it is running', async () => {
-    daemon = await startDaemon({ driftlockHomeDir: process.env.DRIFTLOCK_HOME as string });
+    daemon = await startDaemon({
+      driftlockHomeDir: process.env.DRIFTLOCK_HOME as string,
+      logger: noopLogger,
+    });
     const report = await runDoctor(repoDir);
     expect(report.checks.find((c) => c.name === 'daemon')?.status).toBe('ok');
     expect(report.checks.find((c) => c.name === 'hook round-trip')?.status).toBe('ok');
@@ -75,5 +79,41 @@ describe('runDoctor', () => {
     mkdirSync(nonRepo, { recursive: true });
     const report = await runDoctor(nonRepo);
     expect(report.checks.find((c) => c.name === 'repo')?.status).toBe('warn');
+  });
+
+  test('reports daemon.log as warn with no file yet', async () => {
+    const report = await runDoctor(repoDir);
+    const logCheck = report.checks.find((c) => c.name === 'daemon.log');
+    expect(logCheck?.status).toBe('warn');
+    expect(logCheck?.detail).toContain('no log file yet');
+  });
+
+  test('reports daemon.log as ok when there are no errors in it', async () => {
+    mkdirSync(process.env.DRIFTLOCK_HOME as string, { recursive: true });
+    const logPath = join(process.env.DRIFTLOCK_HOME as string, 'daemon.log');
+    writeFileSync(
+      logPath,
+      `${JSON.stringify({ ts: Date.now(), level: 'info', component: 'daemon', msg: 'started' })}\n`,
+    );
+
+    const report = await runDoctor(repoDir);
+    const logCheck = report.checks.find((c) => c.name === 'daemon.log');
+    expect(logCheck?.status).toBe('ok');
+  });
+
+  test('surfaces the most recent error from daemon.log', async () => {
+    mkdirSync(process.env.DRIFTLOCK_HOME as string, { recursive: true });
+    const logPath = join(process.env.DRIFTLOCK_HOME as string, 'daemon.log');
+    const lines = [
+      { ts: 1000, level: 'info', component: 'daemon', msg: 'started' },
+      { ts: 2000, level: 'error', component: 'daemon:watcher', msg: 'codex watcher scan failed' },
+      { ts: 3000, level: 'info', component: 'daemon:server', msg: 'handled /hook' },
+    ];
+    writeFileSync(logPath, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+
+    const report = await runDoctor(repoDir);
+    const logCheck = report.checks.find((c) => c.name === 'daemon.log');
+    expect(logCheck?.status).toBe('warn');
+    expect(logCheck?.detail).toContain('codex watcher scan failed');
   });
 });

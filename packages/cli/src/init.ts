@@ -2,11 +2,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { ClaudeCodeAdapter } from '@driftlock/adapter-claude-code';
 import { CodexAdapter } from '@driftlock/adapter-codex';
-import type { AgentId, InstallResult, RepoRef } from '@driftlock/core';
+import type { AgentId, InstallResult, Logger, RepoRef } from '@driftlock/core';
 import {
   driftlockDir,
   driftlockHome,
   findRepoRoot,
+  noopLogger,
   openRegistryDb,
   openRepoDb,
   readRepoMeta,
@@ -23,6 +24,7 @@ const GITIGNORE_ENTRY = '.driftlock/';
 export interface InitOptions {
   cwd: string;
   agents?: AgentId[];
+  logger?: Logger;
 }
 
 export interface InitResult {
@@ -59,10 +61,12 @@ function ensureDecisionsFile(repoRoot: string): boolean {
 }
 
 export async function runInit(opts: InitOptions): Promise<InitResult> {
+  const logger = opts.logger ?? noopLogger;
   const repoRoot = findRepoRoot(opts.cwd);
   if (!repoRoot) {
     throw new Error(`no git repository found at or above ${opts.cwd}`);
   }
+  logger.debug('resolved repo root', { repoRoot });
 
   mkdirSync(driftlockDir(repoRoot), { recursive: true });
 
@@ -72,6 +76,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   repoDb.setMeta('repo_id', repoId);
   repoDb.close();
   writeRepoMeta(repoRoot, { repoId });
+  logger.debug(existingMeta ? 're-using existing repo id' : 'assigned new repo id', { repoId });
 
   const gitignoreUpdated = ensureGitignoreEntry(repoRoot);
   const decisionsCreated = ensureDecisionsFile(repoRoot);
@@ -82,13 +87,16 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   for (const agent of agents) {
     const adapter = adapterFor(agent);
     if (!adapter) {
+      logger.debug('no adapter available yet for agent', { agent });
       installResults.push({
         agent,
         result: { installed: false, details: `no adapter available yet for ${agent}` },
       });
       continue;
     }
-    installResults.push({ agent, result: await adapter.install(ref) });
+    const result = await adapter.install(ref);
+    logger.debug('adapter install finished', { agent, installed: result.installed });
+    installResults.push({ agent, result });
   }
 
   mkdirSync(driftlockHome(), { recursive: true });
@@ -103,6 +111,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     lastSeen: now,
   });
   registry.close();
+  logger.info('init complete', { repoRoot, repoId, agents });
 
   return { repoRoot, repoId, agents, decisionsCreated, gitignoreUpdated, installResults };
 }
