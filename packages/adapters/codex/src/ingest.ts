@@ -76,7 +76,14 @@ export async function syncCodexSessionFile(
   if (!meta) return null;
 
   let existing = repoDb.getSessionByAgentSession('codex', meta.id);
-  if (existing?.endedAt !== null && existing?.endedAt !== undefined) {
+  // Once a hook has ever touched this session, hook-side SessionEnd/Stop is
+  // the sole authority on when it ended — the transcript idle heuristic
+  // must not finalize or reopen it (see isSessionHookBacked; this is a
+  // session-level flag, not "has any event row with source='hooks'" — a
+  // session whose only hook activity was SessionStart+SessionEnd writes no
+  // event rows at all but is still genuinely hook-backed).
+  const hookBacked = existing ? repoDb.isSessionHookBacked(existing.id) : false;
+  if (!hookBacked && existing?.endedAt !== null && existing?.endedAt !== undefined) {
     if (file.mtimeMs <= existing.endedAt) {
       return null; // finalized, and nothing has changed since — truly nothing to do
     }
@@ -117,15 +124,30 @@ export async function syncCodexSessionFile(
   if (!sessionInit) return null;
 
   const sessionId = repoDb.transaction(() => {
-    const id = existing ? existing.id : repoDb.createSession(sessionInit).id;
-    repoDb.replaceEvents(id, events);
-    return id;
+    const { session } = repoDb.getOrCreateSessionByAgentSession(sessionInit);
+    // Once any hook has written into this session, its rows must never be
+    // wholesale-replaced (that would renumber `seq` under hook data and
+    // finding evidence pointers) — merge gap-fill only. Otherwise this is
+    // the pure fallback path (hooks untrusted or never fired), unchanged
+    // from M1: reparse-and-replace on every sync.
+    if (repoDb.isSessionHookBacked(session.id)) {
+      repoDb.mergeEvents(session.id, events);
+    } else {
+      repoDb.replaceEvents(session.id, events);
+    }
+    return session.id;
   });
 
   return { sessionId, isNewSession: !existing, finalized: false };
 }
 
-/** Marks a session ended if its file has gone idle. No-op if already ended or still active. */
+/**
+ * Marks a session ended if its file has gone idle. No-op if already ended,
+ * still active, or hook-backed — once any hook has written into a session,
+ * a hook `SessionEnd`/`Stop` is the sole authority on when it ended; the
+ * idle heuristic is only for the fallback path (hooks untrusted or never
+ * fired).
+ */
 export function finalizeIfIdle(
   file: SessionFile,
   sessionId: string,
@@ -135,6 +157,7 @@ export function finalizeIfIdle(
 ): boolean {
   const session = repoDb.getSession(sessionId);
   if (!session || session.endedAt !== null) return false;
+  if (repoDb.isSessionHookBacked(sessionId)) return false;
   if (!isFileIdle(file, idleThresholdMs, now)) return false;
   repoDb.endSession(sessionId, file.mtimeMs, 'idle');
   return true;
