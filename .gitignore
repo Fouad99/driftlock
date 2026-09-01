@@ -93,6 +93,7 @@ DECISIONS.md
 # Nuxt.js build / generate output
 .nuxt
 dist
+tsc-out
 
 # Gatsby files
 .cache/

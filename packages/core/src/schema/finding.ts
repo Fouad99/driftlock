@@ -17,8 +17,15 @@ export const FindingSchema = z.object({
   data: z.unknown().nullable(),
   createdAt: z.number().int(),
   resolvedAt: z.number().int().nullable(),
+  /** M3 "add to brief" (05-UI.md §2.3) — pinned into every brief regeneration until resolved or re-analyzed away. Lost across `deleteOpenFindings` + re-analysis: pin state keys on `finding.id`, which doesn't survive a fresh analyzer run. */
+  pinned: z.boolean(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
-export const NewFindingSchema = FindingSchema.omit({ id: true, createdAt: true, resolvedAt: true });
+export const NewFindingSchema = FindingSchema.omit({
+  id: true,
+  createdAt: true,
+  resolvedAt: true,
+  pinned: true,
+});
 export type NewFinding = z.infer<typeof NewFindingSchema>;

@@ -2,6 +2,7 @@
 import type { AgentId, Logger } from '@driftlock/core';
 import { createConsoleSink, createLogger, noopLogger } from '@driftlock/core';
 import { runBrief } from './brief.ts';
+import { runCommitShow } from './commit-show.ts';
 import { runDaemon } from './daemon-command.ts';
 import { runDoctor } from './doctor.ts';
 import {
@@ -13,9 +14,12 @@ import {
   formatStatus,
 } from './format.ts';
 import { runInit } from './init.ts';
+import { runPin } from './pin.ts';
 import { runReport } from './report.ts';
+import { runResolve } from './resolve.ts';
 import { runSessions } from './sessions.ts';
 import { runStatus } from './status.ts';
+import { runUi } from './ui-command.ts';
 
 function parseFlags(argv: string[]): { positional: string[]; flags: Map<string, string | true> } {
   const positional: string[] = [];
@@ -166,6 +170,66 @@ async function cmdDoctor(argv: string[]): Promise<number> {
   return report.checks.some((c) => c.status === 'fail') ? 1 : 0;
 }
 
+async function cmdResolve(argv: string[]): Promise<number> {
+  const { positional, flags } = parseFlags(argv);
+  const findingId = positional[0];
+  if (!findingId) {
+    console.error('usage: driftlock resolve <finding-id>');
+    return 1;
+  }
+
+  const finding = await runResolve({ cwd: process.cwd(), findingId });
+
+  if (flags.get('json')) {
+    console.log(JSON.stringify(finding, null, 2));
+    return 0;
+  }
+  console.log(`resolved ${finding.id} — ${finding.title}`);
+  return 0;
+}
+
+async function cmdAddToBrief(argv: string[]): Promise<number> {
+  const { positional, flags } = parseFlags(argv);
+  const findingId = positional[0];
+  if (!findingId) {
+    console.error('usage: driftlock add-to-brief <finding-id> [--remove]');
+    return 1;
+  }
+  const pinned = !flags.get('remove');
+
+  const finding = await runPin({
+    cwd: process.cwd(),
+    findingId,
+    pinned,
+    logger: loggerFor(flags),
+  });
+
+  if (flags.get('json')) {
+    console.log(JSON.stringify(finding, null, 2));
+    return 0;
+  }
+  console.log(`${pinned ? 'pinned' : 'unpinned'} ${finding.id} — ${finding.title}`);
+  return 0;
+}
+
+async function cmdCommitShow(argv: string[]): Promise<number> {
+  const { positional, flags } = parseFlags(argv);
+  const sha = positional[0];
+  if (!sha) {
+    console.error('usage: driftlock commit-show <sha>');
+    return 1;
+  }
+
+  const commit = runCommitShow({ cwd: process.cwd(), sha });
+
+  if (flags.get('json')) {
+    console.log(JSON.stringify(commit, null, 2));
+    return 0;
+  }
+  console.log(commit.show);
+  return 0;
+}
+
 async function cmdDaemon(argv: string[]): Promise<number> {
   const { flags } = parseFlags(argv);
   const portFlag = flags.get('port');
@@ -186,6 +250,29 @@ async function cmdDaemon(argv: string[]): Promise<number> {
   });
 }
 
+async function cmdUi(argv: string[]): Promise<number> {
+  const { flags } = parseFlags(argv);
+  const portFlag = flags.get('port');
+  const port = typeof portFlag === 'string' ? Number(portFlag) : undefined;
+
+  const result = await runUi({
+    ...(port !== undefined && { port }),
+    logger: loggerFor(flags),
+  });
+
+  if (flags.get('json')) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  console.log(
+    result.reusedExistingDaemon
+      ? `Reusing the running daemon on port ${result.port}.`
+      : `Started the daemon on port ${result.port}.`,
+  );
+  console.log(`Opening ${result.url}`);
+  return 0;
+}
+
 async function main(): Promise<number> {
   const [command, ...rest] = process.argv.slice(2);
   try {
@@ -202,12 +289,22 @@ async function main(): Promise<number> {
         return await cmdStatus(rest);
       case 'doctor':
         return await cmdDoctor(rest);
+      case 'resolve':
+        return await cmdResolve(rest);
+      case 'add-to-brief':
+        return await cmdAddToBrief(rest);
+      case 'commit-show':
+        return await cmdCommitShow(rest);
       case 'daemon':
         return await cmdDaemon(rest);
+      case 'ui':
+        return await cmdUi(rest);
       case undefined:
       case '--help':
       case '-h':
-        console.log('Usage: driftlock <init|report|sessions|brief|status|doctor|daemon> [options]');
+        console.log(
+          'Usage: driftlock <init|report|sessions|brief|status|doctor|resolve|add-to-brief|commit-show|daemon|ui> [options]',
+        );
         return command === undefined ? 1 : 0;
       default:
         console.error(`Unknown command: ${command}`);
@@ -223,4 +320,17 @@ if (import.meta.main) {
   main().then((code) => process.exit(code));
 }
 
-export { cmdInit, cmdReport, cmdSessions, cmdBrief, cmdStatus, cmdDoctor, cmdDaemon, main };
+export {
+  cmdInit,
+  cmdReport,
+  cmdSessions,
+  cmdBrief,
+  cmdStatus,
+  cmdDoctor,
+  cmdResolve,
+  cmdAddToBrief,
+  cmdCommitShow,
+  cmdDaemon,
+  cmdUi,
+  main,
+};

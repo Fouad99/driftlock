@@ -1,0 +1,65 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "driftlock-hook",
+            "args": ["claude-code", "SessionStart", "--wait"],
+            "additionalContextLimit": 2000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "driftlock-hook",
+            "args": ["claude-code", "UserPromptSubmit"]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "driftlock-hook",
+            "args": ["claude-code", "PostToolUse"]
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "driftlock-hook",
+            "args": ["claude-code", "PreCompact"]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "driftlock-hook",
+            "args": ["claude-code", "Stop"]
+          }
+        ]
+      }
+    ]
+  }
+}

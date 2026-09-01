@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type RegistryStore, openRegistryDb } from '@driftlock/core';
@@ -100,8 +100,151 @@ describe('POST /hook', () => {
 });
 
 describe('unknown routes', () => {
-  test('404s', async () => {
+  test('an unauthenticated GET to an unknown path 401s — it falls through to the UI static-asset gate, not a bare 404', async () => {
     const res = await fetch(`${baseUrl}/nope`);
+    expect(res.status).toBe(401);
+  });
+
+  test('an authenticated GET to an unknown, non-/api path either serves the SPA shell or reports the UI as unbuilt — never a bare 404', async () => {
+    const res = await fetch(`${baseUrl}/nope`, { headers: { authorization: `Bearer ${token}` } });
+    expect([200, 503]).toContain(res.status);
+  });
+
+  test('an unmatched GET under /api/* is a real 404, not the SPA shell', async () => {
+    const res = await fetch(`${baseUrl}/api/does-not-exist`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.get('content-type')).toContain('application/json');
+  });
+});
+
+describe('UI static asset serving', () => {
+  test('serves the built app shell for / and for a client-side route, once packages/ui is built', async () => {
+    const uiDistDir = mkdtempSync(join(tmpdir(), 'driftlock-server-ui-dist-'));
+    writeFileSync(join(uiDistDir, 'index.html'), '<html>the app shell</html>');
+    const uiServer = createServer({
+      port: 0,
+      token,
+      version: '0.0.0-test',
+      adapters: {},
+      registryDb,
+      uiDistDir,
+    });
+    try {
+      const uiBaseUrl = `http://127.0.0.1:${uiServer.port}`;
+      const root = await fetch(`${uiBaseUrl}/`, { headers: { authorization: `Bearer ${token}` } });
+      expect(root.status).toBe(200);
+      expect(await root.text()).toBe('<html>the app shell</html>');
+
+      const clientRoute = await fetch(`${uiBaseUrl}/repo/x/session/y`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(await clientRoute.text()).toBe('<html>the app shell</html>');
+    } finally {
+      uiServer.stop(true);
+      rmSync(uiDistDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('POST /api/bootstrap', () => {
+  test('rejects a request with no Authorization header', async () => {
+    const res = await fetch(`${baseUrl}/api/bootstrap`, { method: 'POST' });
+    expect(res.status).toBe(401);
+  });
+
+  test('rejects the wrong token', async () => {
+    const res = await fetch(`${baseUrl}/api/bootstrap`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer wrong-token' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  test('returns a nonce for the right token', async () => {
+    const res = await fetch(`${baseUrl}/api/bootstrap`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { nonce: string };
+    expect(body.nonce).toBeTruthy();
+  });
+});
+
+describe('GET /?bootstrap=<nonce>', () => {
+  async function mintNonce(): Promise<string> {
+    const res = await fetch(`${baseUrl}/api/bootstrap`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return ((await res.json()) as { nonce: string }).nonce;
+  }
+
+  test('a valid nonce redirects to / and sets the session cookie', async () => {
+    const nonce = await mintNonce();
+    const res = await fetch(`${baseUrl}/?bootstrap=${nonce}`, { redirect: 'manual' });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/');
+    const cookie = res.headers.get('set-cookie') ?? '';
+    expect(cookie).toContain('driftlock_session=');
+    expect(cookie).toContain('HttpOnly');
+  });
+
+  test('the same nonce can redeem more than once within its TTL — not single-use (auth.ts)', async () => {
+    const nonce = await mintNonce();
+    const first = await fetch(`${baseUrl}/?bootstrap=${nonce}`, { redirect: 'manual' });
+    const second = await fetch(`${baseUrl}/?bootstrap=${nonce}`, { redirect: 'manual' });
+    expect(first.status).toBe(302);
+    expect(second.status).toBe(302);
+  });
+
+  test('an unknown nonce is rejected', async () => {
+    const res = await fetch(`${baseUrl}/?bootstrap=not-a-real-nonce`, { redirect: 'manual' });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('/api/* auth and origin gating', () => {
+  test('GET /api/* with no auth is rejected', async () => {
+    const res = await fetch(`${baseUrl}/api/repos`);
+    expect(res.status).toBe(401);
+  });
+
+  test('GET /api/* with the bearer token passes auth and reaches the real route', async () => {
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repos: unknown[] };
+    expect(body.repos).toEqual([]);
+  });
+
+  test('GET /api/* with a valid session cookie passes auth', async () => {
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      headers: { cookie: `driftlock_session=${token}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test('a mutation (non-GET) with the bearer token but no matching Host/Origin is rejected', async () => {
+    const res = await fetch(`${baseUrl}/api/repos/x/findings/y/resolve`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        host: 'evil.example',
+        origin: 'http://evil.example',
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test('a mutation with the bearer token and a matching Host passes the origin check (404s for real — repo "x" is not registered)', async () => {
+    const res = await fetch(`${baseUrl}/api/repos/x/findings/y/resolve`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
     expect(res.status).toBe(404);
   });
 });
