@@ -8,24 +8,36 @@ import {
 } from '../src/auth.ts';
 
 describe('BootstrapNonces', () => {
-  test('a freshly created nonce consumes successfully exactly once', () => {
+  test('a freshly created nonce redeems successfully', () => {
     const nonces = new BootstrapNonces();
     const nonce = nonces.create();
-    expect(nonces.consume(nonce)).toBe(true);
-    expect(nonces.consume(nonce)).toBe(false); // replay fails
+    expect(nonces.redeem(nonce)).toBe(true);
   });
 
-  test('an unknown nonce never consumes', () => {
+  test('redemption is repeatable within the TTL window — not single-use', () => {
+    // A browser/OS routinely makes its own request to a freshly-opened URL
+    // before the user's own navigation lands (link preview, safe-browsing
+    // scan, address-bar prefetch) — a strictly single-use nonce would make
+    // the user's real click 401 even though the link "worked" a moment
+    // earlier. See auth.ts's class-level comment.
     const nonces = new BootstrapNonces();
-    expect(nonces.consume('never-issued')).toBe(false);
+    const nonce = nonces.create();
+    expect(nonces.redeem(nonce)).toBe(true);
+    expect(nonces.redeem(nonce)).toBe(true);
+    expect(nonces.redeem(nonce)).toBe(true);
+  });
+
+  test('an unknown nonce never redeems', () => {
+    const nonces = new BootstrapNonces();
+    expect(nonces.redeem('never-issued')).toBe(false);
   });
 
   test('two different nonces are independent', () => {
     const nonces = new BootstrapNonces();
     const a = nonces.create();
     const b = nonces.create();
-    expect(nonces.consume(a)).toBe(true);
-    expect(nonces.consume(b)).toBe(true);
+    expect(nonces.redeem(a)).toBe(true);
+    expect(nonces.redeem(b)).toBe(true);
   });
 });
 

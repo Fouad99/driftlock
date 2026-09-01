@@ -62,13 +62,14 @@ export function createServer(opts: ServerOptions): ReturnType<typeof Bun.serve> 
           return Response.json({ ok: true, version: opts.version, pid: process.pid });
         }
 
-        // Consumes the CLI-minted nonce (`POST /api/bootstrap` below) and
-        // exchanges it for the session cookie — see `auth.ts` and
-        // `05-UI.md` §3. Handled ahead of the generic `/api/*` gate since a
-        // browser hitting this has no cookie yet by definition.
+        // Redeems the CLI-minted nonce (`POST /api/bootstrap` below) for
+        // the session cookie — see `auth.ts` for why this is repeatable
+        // within its short TTL rather than strictly single-use. Handled
+        // ahead of the generic `/api/*` gate since a browser hitting this
+        // has no cookie yet by definition.
         if (url.pathname === '/' && url.searchParams.has('bootstrap')) {
           const nonce = url.searchParams.get('bootstrap') as string;
-          if (!bootstrapNonces.consume(nonce)) {
+          if (!bootstrapNonces.redeem(nonce)) {
             logger.warn('rejected bootstrap: nonce invalid, expired, or already used');
             return unauthorized();
           }

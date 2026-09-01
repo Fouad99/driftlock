@@ -11,10 +11,22 @@ import { randomUUID } from 'node:crypto';
 // The cookie's value IS the daemon's real bearer token — there is no
 // separate session concept to track or expire. The nonce's only job is to
 // be the thing that briefly appears in a URL (shell history, the browser's
-// address bar) instead of the token itself; it's random, single-use, and
-// expires in seconds, so a leaked nonce is worthless once `driftlock ui`
-// has already consumed it to open the browser.
-
+// address bar) instead of the token itself; it's random and short-lived, so
+// a leaked nonce is worthless once it expires.
+//
+// Deliberately NOT single-use (an earlier version deleted a nonce on its
+// first check): in practice, browsers and OS-level link handling routinely
+// make an HTTP request to a freshly-opened URL before the user's own
+// navigation lands — link previews, safe-browsing/link-scanning, address
+// bar preconnect/prefetch. Any of those silently burns a strictly one-time
+// token, so the user's actual click 404/401s even though a cookie already
+// got set moments earlier from the same URL (confusing: the app *works* if
+// you then load `/` directly, just not via the link you were handed).
+// Tolerating repeat redemption within the short TTL window costs nothing
+// real here — the threat this defends against (someone else on the machine
+// reading the URL out of shell history/terminal scrollback) is exactly as
+// mitigated by "expires in seconds" alone as it was by "single-use", since
+// either way the window to exploit a leaked nonce is the same few seconds.
 const NONCE_TTL_MS = 30_000;
 
 export const SESSION_COOKIE_NAME = 'driftlock_session';
@@ -29,10 +41,9 @@ export class BootstrapNonces {
     return nonce;
   }
 
-  /** Single-use: valid the first time it's checked, gone either way afterward — a replay (back button, a leaked/logged URL) always fails. */
-  consume(nonce: string): boolean {
+  /** Valid until `NONCE_TTL_MS` after minting — repeatable within that window (see the class-level comment on why this isn't single-use). */
+  redeem(nonce: string): boolean {
     const expiresAt = this.pending.get(nonce);
-    this.pending.delete(nonce);
     return expiresAt !== undefined && Date.now() < expiresAt;
   }
 

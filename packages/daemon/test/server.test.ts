@@ -192,11 +192,12 @@ describe('GET /?bootstrap=<nonce>', () => {
     expect(cookie).toContain('HttpOnly');
   });
 
-  test('the same nonce cannot be consumed twice', async () => {
+  test('the same nonce can redeem more than once within its TTL — not single-use (auth.ts)', async () => {
     const nonce = await mintNonce();
-    await fetch(`${baseUrl}/?bootstrap=${nonce}`, { redirect: 'manual' });
+    const first = await fetch(`${baseUrl}/?bootstrap=${nonce}`, { redirect: 'manual' });
     const second = await fetch(`${baseUrl}/?bootstrap=${nonce}`, { redirect: 'manual' });
-    expect(second.status).toBe(401);
+    expect(first.status).toBe(302);
+    expect(second.status).toBe(302);
   });
 
   test('an unknown nonce is rejected', async () => {
