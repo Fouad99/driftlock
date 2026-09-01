@@ -1,7 +1,9 @@
 import { Database } from 'bun:sqlite';
 import { monotonicFactory } from 'ulid';
+import type { EventPage, EventSummary } from '../schema/api.ts';
+import { summarizeEvent } from '../schema/api.ts';
 import type { Brief } from '../schema/brief.ts';
-import type { Event, NewEvent } from '../schema/event.ts';
+import type { Event, EventKind, NewEvent } from '../schema/event.ts';
 import type { Finding, NewFinding } from '../schema/finding.ts';
 import type { Session, SessionInit } from '../schema/session.ts';
 import { eventTimeBucket, fingerprintEvent } from './event-fingerprint.ts';
@@ -30,6 +32,19 @@ function toSession(row: Record<string, unknown>): Session {
     tokenOut: (row.token_out as number | null) ?? null,
     costUsd: (row.cost_usd as number | null) ?? null,
     source: row.source as Session['source'],
+  };
+}
+
+function toEventSummary(
+  sessionId: string,
+  row: { seq: number; ts: number; kind: string; payload: string },
+): EventSummary {
+  return {
+    sessionId,
+    seq: row.seq,
+    ts: row.ts,
+    kind: row.kind,
+    summary: summarizeEvent({ kind: row.kind as EventKind, payload: JSON.parse(row.payload) }),
   };
 }
 
@@ -64,6 +79,7 @@ function toFinding(row: Record<string, unknown>): Finding {
     data: row.data ? JSON.parse(row.data as string) : null,
     createdAt: row.created_at as number,
     resolvedAt: (row.resolved_at as number | null) ?? null,
+    pinned: (row.pinned as number) === 1,
   };
 }
 
@@ -84,6 +100,7 @@ export class RepoStore {
       }
       this.migrateEventProvenanceColumns();
       this.migrateSessionHookBackedColumn();
+      this.migrateFindingPinnedColumn();
       const existing = this.getMeta('schema_version');
       if (existing === null) {
         this.setMeta('schema_version', SCHEMA_VERSION);
@@ -148,6 +165,14 @@ export class RepoStore {
     if (!cols.some((c) => c.name === 'hook_backed')) {
       this.db.exec('ALTER TABLE sessions ADD COLUMN hook_backed INTEGER NOT NULL DEFAULT 0');
       this.db.exec("UPDATE sessions SET hook_backed = 1 WHERE source = 'hooks'");
+    }
+  }
+
+  /** Adds `findings.pinned` (M3 "add to brief" — see `05-UI.md` §2.3) on top of the base migration, for DBs created before it existed. */
+  private migrateFindingPinnedColumn(): void {
+    const cols = this.db.query('PRAGMA table_info(findings)').all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'pinned')) {
+      this.db.exec('ALTER TABLE findings ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
     }
   }
 
@@ -573,6 +598,59 @@ export class RepoStore {
     return rows.map(toEvent);
   }
 
+  /**
+   * Bounded, summary-only page of events for the Session timeline
+   * (05-UI.md §4.2) — never loads full payloads in bulk, unlike `getEvents`.
+   * `nextFrom` is the `fromSeq` to pass for the next page, `null` once the
+   * page reaches the session's current max `seq`.
+   */
+  getEventPage(
+    sessionId: string,
+    opts: { fromSeq?: number; limit?: number; kinds?: string[] } = {},
+  ): EventPage {
+    const limit = opts.limit ?? 200;
+    let sql = 'SELECT seq, ts, kind, payload FROM events WHERE session_id = ?';
+    const params: (string | number)[] = [sessionId];
+    if (opts.fromSeq !== undefined) {
+      sql += ' AND seq >= ?';
+      params.push(opts.fromSeq);
+    }
+    if (opts.kinds && opts.kinds.length > 0) {
+      sql += ` AND kind IN (${opts.kinds.map(() => '?').join(',')})`;
+      params.push(...opts.kinds);
+    }
+    sql += ' ORDER BY seq ASC LIMIT ?';
+    params.push(limit + 1);
+    const rows = this.db.query(sql).all(...params) as {
+      seq: number;
+      ts: number;
+      kind: string;
+      payload: string;
+    }[];
+    const maxSeqRow = this.db
+      .query('SELECT COALESCE(MAX(seq), -1) AS max FROM events WHERE session_id = ?')
+      .get(sessionId) as { max: number };
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    return {
+      events: page.map((r) => toEventSummary(sessionId, r)),
+      nextFrom: hasMore ? (page.at(-1)?.seq ?? 0) + 1 : null,
+      maxSeq: maxSeqRow.max,
+    };
+  }
+
+  /** Bounded window of event summaries around a finding's `fromSeq..toSeq` range, for the evidence pane's "jump to finding" (05-UI.md §4.2). */
+  getEvidenceRange(sessionId: string, fromSeq: number, toSeq: number, padding = 3): EventSummary[] {
+    const from = Math.max(0, fromSeq - padding);
+    const to = toSeq + padding;
+    const rows = this.db
+      .query(
+        'SELECT seq, ts, kind, payload FROM events WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq ASC',
+      )
+      .all(sessionId, from, to) as { seq: number; ts: number; kind: string; payload: string }[];
+    return rows.map((r) => toEventSummary(sessionId, r));
+  }
+
   // --- findings ---
 
   /**
@@ -581,6 +659,11 @@ export class RepoStore {
    * findings are *replaced*, not accumulated. Resolved findings are left
    * alone: a user's "I looked at this and it's fine" shouldn't be erased by
    * a later re-analysis.
+   *
+   * A pinned-but-open finding is deleted along with the rest — `pinned`
+   * keys on `finding.id`, which a fresh analyzer run doesn't preserve.
+   * Documented tradeoff (05-UI.md §2.3), not a bug: re-pin after re-analysis
+   * if it still applies.
    */
   deleteOpenFindings(sessionId: string): void {
     this.db
@@ -619,7 +702,9 @@ export class RepoStore {
     return row ? toFinding(row) : null;
   }
 
-  listFindings(opts: { sessionId?: string; open?: boolean } = {}): Finding[] {
+  listFindings(
+    opts: { sessionId?: string; open?: boolean; pinnedFirst?: boolean } = {},
+  ): Finding[] {
     let sql = 'SELECT * FROM findings WHERE 1=1';
     const params: string[] = [];
     if (opts.sessionId) {
@@ -629,13 +714,39 @@ export class RepoStore {
     if (opts.open) {
       sql += ' AND resolved_at IS NULL';
     }
-    sql += ' ORDER BY created_at DESC';
+    sql += opts.pinnedFirst
+      ? ' ORDER BY pinned DESC, created_at DESC'
+      : ' ORDER BY created_at DESC';
     const rows = this.db.query(sql).all(...params) as Record<string, unknown>[];
     return rows.map(toFinding);
   }
 
+  /** Per-severity counts of open findings — Overview's severity breakdown (05-UI.md §2.1) needs more than the total `listFindings({open:true}).length`. */
+  countOpenFindingsBySeverity(sessionId?: string): { info: number; warn: number; high: number } {
+    let sql = 'SELECT severity, COUNT(*) AS n FROM findings WHERE resolved_at IS NULL';
+    const params: string[] = [];
+    if (sessionId) {
+      sql += ' AND session_id = ?';
+      params.push(sessionId);
+    }
+    sql += ' GROUP BY severity';
+    const rows = this.db.query(sql).all(...params) as { severity: string; n: number }[];
+    const counts = { info: 0, warn: 0, high: 0 };
+    for (const row of rows) {
+      if (row.severity === 'info' || row.severity === 'warn' || row.severity === 'high') {
+        counts[row.severity] = row.n;
+      }
+    }
+    return counts;
+  }
+
   resolveFinding(id: string, resolvedAt: number = Date.now()): void {
     this.db.query('UPDATE findings SET resolved_at = ? WHERE id = ?').run(resolvedAt, id);
+  }
+
+  /** "Add to brief" (05-UI.md §2.3) — pins/unpins a finding for inclusion in every future brief regeneration regardless of the generator's normal recency cutoff. */
+  setFindingPinned(id: string, pinned: boolean): void {
+    this.db.query('UPDATE findings SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id);
   }
 
   // --- briefs ---

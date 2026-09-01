@@ -1,5 +1,5 @@
 import { TranscriptTaskSource } from '@driftlock/analyzers';
-import type { Logger, RepoStore } from '@driftlock/core';
+import type { Finding, Logger, RepoStore } from '@driftlock/core';
 import { currentBranch, isDirty, noopLogger } from '@driftlock/core';
 import { writeResumeBriefToRepo } from './resume-block.ts';
 
@@ -24,6 +24,22 @@ function truncate(text: string, max: number): string {
   return t.length > max ? `${t.slice(0, max)}…` : t;
 }
 
+/**
+ * "Add to brief" (05-UI.md §2.3) promises every pinned finding bypasses the
+ * normal recent-N cutoff — so pinned findings are never subject to
+ * `MAX_FINDINGS` (unbounded; the brief's line budget is a display/curation
+ * concern, not something pinning should silently violate its own contract
+ * over), and only the *remaining* budget after all pins are seated is
+ * filled with the most recent unpinned ones. `findings` must already be
+ * sorted pinned-first (`listFindings({pinnedFirst: true})`) so `unpinned`
+ * below is still recency-ordered.
+ */
+function selectBriefFindings(findings: Finding[]): Finding[] {
+  const pinned = findings.filter((f) => f.pinned);
+  const unpinned = findings.filter((f) => !f.pinned);
+  return [...pinned, ...unpinned.slice(0, Math.max(0, MAX_FINDINGS - pinned.length))];
+}
+
 /** No-op (does not touch `briefs`) unless the session has actually ended — a brief generated from an in-flight session would be stale by the time anyone reads it. */
 export async function generateBrief(
   sessionId: string,
@@ -40,7 +56,7 @@ export async function generateBrief(
 
   const lastAgentTurn = [...events].reverse().find((e) => e.kind === 'agent_turn');
   const planItems = events.filter((e) => e.kind === 'plan_item').slice(-MAX_PLAN_ITEMS);
-  const findings = repoDb.listFindings({ open: true }).slice(0, MAX_FINDINGS);
+  const findings = selectBriefFindings(repoDb.listFindings({ open: true, pinnedFirst: true }));
   const branch = currentBranch(repoRoot);
   const dirty = isDirty(repoRoot);
 

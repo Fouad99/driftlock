@@ -40,7 +40,8 @@ export const REPO_DB_MIGRATIONS: string[] = [
     to_seq      INTEGER,
     data        TEXT,
     created_at  INTEGER NOT NULL,
-    resolved_at INTEGER
+    resolved_at INTEGER,
+    pinned      INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS briefs (
@@ -71,21 +72,27 @@ export const REPO_DB_MIGRATIONS: string[] = [
 export const REGISTRY_DB_MIGRATIONS: string[] = [
   `
   CREATE TABLE IF NOT EXISTS repos (
-    repo_id       TEXT PRIMARY KEY,
-    root          TEXT NOT NULL UNIQUE,
-    name          TEXT,
-    agents        TEXT NOT NULL,
-    registered_at INTEGER NOT NULL,
-    last_seen     INTEGER
+    repo_id         TEXT PRIMARY KEY,
+    root            TEXT NOT NULL UNIQUE,
+    name            TEXT,
+    agents          TEXT NOT NULL,
+    registered_at   INTEGER NOT NULL,
+    last_seen       INTEGER,
+    branch          TEXT,
+    git_status      TEXT NOT NULL DEFAULT 'unavailable',
+    git_checked_at  INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS session_index (
-    session_id     TEXT PRIMARY KEY,
-    repo_id        TEXT NOT NULL,
-    agent          TEXT,
-    started_at     INTEGER,
-    ended_at       INTEGER,
-    open_findings  INTEGER
+    session_id             TEXT PRIMARY KEY,
+    repo_id                TEXT NOT NULL,
+    agent                  TEXT,
+    started_at             INTEGER,
+    ended_at               INTEGER,
+    open_findings          INTEGER,
+    open_findings_info     INTEGER NOT NULL DEFAULT 0,
+    open_findings_warn     INTEGER NOT NULL DEFAULT 0,
+    open_findings_high     INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS daemon_state (

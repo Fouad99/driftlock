@@ -109,6 +109,71 @@ describe('generateBrief', () => {
     expect(repoDb.getBrief(sessionId)?.markdown).not.toContain('stuck in a loop');
   });
 
+  test('every pinned finding survives even when there are more than MAX_FINDINGS (10) of them', async () => {
+    const sessionId = seedSession();
+    const pinnedIds: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      const f = repoDb.createFinding({
+        sessionId,
+        analyzer: 'loop',
+        severity: 'warn',
+        title: `pinned finding ${i}`,
+        explanation: 'x',
+        fromSeq: null,
+        toSeq: null,
+        data: null,
+      });
+      repoDb.setFindingPinned(f.id, true);
+      pinnedIds.push(f.id);
+    }
+
+    await generateBrief(sessionId, dir, repoDb);
+    const markdown = repoDb.getBrief(sessionId)?.markdown ?? '';
+    for (let i = 0; i < 12; i++) {
+      expect(markdown).toContain(`pinned finding ${i}`);
+    }
+  });
+
+  test('pinned findings never crowd out entirely, but unpinned ones still fill the remaining budget', async () => {
+    const sessionId = seedSession();
+    const pinned = repoDb.createFinding({
+      sessionId,
+      analyzer: 'loop',
+      severity: 'warn',
+      title: 'pinned one',
+      explanation: 'x',
+      fromSeq: null,
+      toSeq: null,
+      data: null,
+    });
+    repoDb.setFindingPinned(pinned.id, true);
+    for (let i = 0; i < 15; i++) {
+      repoDb.createFinding({
+        sessionId,
+        analyzer: 'loop',
+        severity: 'info',
+        title: `unpinned finding ${i}`,
+        explanation: 'x',
+        fromSeq: null,
+        toSeq: null,
+        data: null,
+      });
+    }
+
+    await generateBrief(sessionId, dir, repoDb);
+    const markdown = repoDb.getBrief(sessionId)?.markdown ?? '';
+    expect(markdown).toContain('pinned one');
+    // MAX_FINDINGS is 10: the pin takes one slot, 9 of the 15 unpinned fill the rest —
+    // the brief still respects its overall budget for non-pinned findings.
+    expect(markdown).toContain('## Unresolved findings (10)');
+    // Exact match via a trailing word boundary — "unpinned finding 1" is
+    // otherwise a substring of "unpinned finding 14" and double-counts.
+    const unpinnedMentioned = Array.from({ length: 15 }, (_, i) => i).filter((i) =>
+      new RegExp(`unpinned finding ${i}\\b`).test(markdown),
+    );
+    expect(unpinnedMentioned).toHaveLength(9);
+  });
+
   test('is safe to call twice — upserts rather than duplicating', async () => {
     const sessionId = seedSession();
     await generateBrief(sessionId, dir, repoDb);

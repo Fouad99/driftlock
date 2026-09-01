@@ -102,13 +102,19 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   mkdirSync(driftlockHome(), { recursive: true });
   const registry = openRegistryDb(join(driftlockHome(), 'registry.sqlite'));
   const now = Date.now();
+  const existing = registry.getRepo(repoId);
   registry.upsertRepo({
     repoId,
     root: repoRoot,
     name: basename(repoRoot),
     agents,
-    registeredAt: existingMeta ? (registry.getRepo(repoId)?.registeredAt ?? now) : now,
+    registeredAt: existingMeta ? (existing?.registeredAt ?? now) : now,
     lastSeen: now,
+    // Not probed yet at init time — the first real session-end/report/status
+    // run refreshes this via `syncSessionIndex`/`refreshRepoGitState`.
+    branch: existing?.branch ?? null,
+    gitStatus: existing?.gitStatus ?? 'unavailable',
+    gitCheckedAt: existing?.gitCheckedAt ?? null,
   });
   registry.close();
   logger.info('init complete', { repoRoot, repoId, agents });

@@ -9,6 +9,7 @@ import {
   driftlockHome,
   openRegistryDb,
 } from '@driftlock/core';
+import { UpdateBus } from './bus.ts';
 import { type WatcherMode, startCodexWatcher } from './codex-watcher.ts';
 import { daemonLogPath, writeDaemonJson } from './daemon-json.ts';
 import { handleHookEnvelope } from './hook-handler.ts';
@@ -56,6 +57,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<DaemonHandl
 
   const token = randomUUID();
   const adapters = opts.adapters ?? {};
+  const bus = new UpdateBus();
 
   const registry = openRegistryDb(`${home}/registry.sqlite`);
 
@@ -67,7 +69,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<DaemonHandl
   // chance to establish the session.
   const drainResult = await drainSpool(
     home,
-    (envelope) => handleHookEnvelope(envelope, adapters, registry, logger.child('hook')),
+    (envelope) => handleHookEnvelope(envelope, adapters, registry, logger.child('hook'), bus),
     logger.child('spool'),
   );
 
@@ -77,6 +79,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<DaemonHandl
     version: VERSION,
     adapters,
     registryDb: registry,
+    bus,
     logger: logger.child('server'),
   });
   const port: number = server.port ?? opts.port ?? 0;
@@ -93,7 +96,16 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<DaemonHandl
     registryDb: registry,
     logger: logger.child('watcher'),
     onModeDetected: (mode: WatcherMode) => registry.setDaemonState('codex_watch_mode', mode),
-    ...(opts.onSessionProcessed && { onProcessed: opts.onSessionProcessed }),
+    onProcessed: (result) => {
+      // `ProcessResult` doesn't carry per-finding ids (unlike the hook
+      // path's `finding_added`, below `analyzeAndStore`) — publishing
+      // `session_updated` still lets a connected browser refetch and see
+      // whatever changed, per 05-UI.md §4.2 ("SSE invalidates queries by
+      // repo/session id").
+      bus.publish({ type: 'session_updated', repoId: result.repoId, sessionId: result.sessionId });
+      bus.publish({ type: 'repo_updated', repoId: result.repoId });
+      opts.onSessionProcessed?.(result);
+    },
     ...(opts.codexIdleThresholdMs !== undefined && { idleThresholdMs: opts.codexIdleThresholdMs }),
     ...(opts.codexWatchIntervalMs !== undefined && { intervalMs: opts.codexWatchIntervalMs }),
   });
@@ -142,3 +154,22 @@ export {
 export { handleHookEnvelope } from './hook-handler.ts';
 export { HookEnvelopeSchema } from './hook-envelope.ts';
 export { matchRepo, processCodexSessionFile, type ProcessResult } from './process-codex-session.ts';
+export {
+  getRepoRows,
+  getSessionDetail,
+  getTimelinePage,
+  getEvidenceForFinding,
+  getCommitDetail,
+  type SessionDetail,
+  type TimelineFilter,
+} from './queries.ts';
+export { resolveFindingMutation, setFindingPinnedMutation } from './mutations.ts';
+export { UpdateBus } from './bus.ts';
+export { handleApiRoute, type RouteContext } from './routes.ts';
+export {
+  BootstrapNonces,
+  SESSION_COOKIE_NAME,
+  isAuthenticated,
+  isTrustedOrigin,
+  sessionCookieHeader,
+} from './auth.ts';

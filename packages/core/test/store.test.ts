@@ -291,6 +291,181 @@ describe('RepoStore', () => {
     expect(repoDb.hasAppliedEnvelope('env-1')).toBe(true);
   });
 
+  test('setFindingPinned pins/unpins, and listFindings({pinnedFirst}) sorts pinned ahead of recency', () => {
+    const session = repoDb.createSession({
+      agent: 'claude-code',
+      agentSession: null,
+      repoRoot: '/repo',
+      branch: null,
+      headBefore: null,
+      headAfter: null,
+      startedAt: 1000,
+      taskText: null,
+      tokenIn: null,
+      tokenOut: null,
+      costUsd: null,
+      source: 'hooks',
+    });
+    const older = repoDb.createFinding({
+      sessionId: session.id,
+      analyzer: 'loop',
+      severity: 'warn',
+      title: 'older',
+      explanation: 'x',
+      fromSeq: null,
+      toSeq: null,
+      data: null,
+    });
+    const newer = repoDb.createFinding({
+      sessionId: session.id,
+      analyzer: 'loop',
+      severity: 'warn',
+      title: 'newer',
+      explanation: 'x',
+      fromSeq: null,
+      toSeq: null,
+      data: null,
+    });
+    expect(repoDb.getFinding(older.id)?.pinned).toBe(false);
+
+    repoDb.setFindingPinned(older.id, true);
+    expect(repoDb.getFinding(older.id)?.pinned).toBe(true);
+
+    const ordered = repoDb.listFindings({ sessionId: session.id, pinnedFirst: true });
+    expect(ordered.map((f) => f.id)).toEqual([older.id, newer.id]);
+
+    repoDb.setFindingPinned(older.id, false);
+    expect(repoDb.getFinding(older.id)?.pinned).toBe(false);
+  });
+
+  test('countOpenFindingsBySeverity() breaks down by severity and excludes resolved findings', () => {
+    const session = repoDb.createSession({
+      agent: 'claude-code',
+      agentSession: null,
+      repoRoot: '/repo',
+      branch: null,
+      headBefore: null,
+      headAfter: null,
+      startedAt: 1000,
+      taskText: null,
+      tokenIn: null,
+      tokenOut: null,
+      costUsd: null,
+      source: 'hooks',
+    });
+    const high = repoDb.createFinding({
+      sessionId: session.id,
+      analyzer: 'loop',
+      severity: 'high',
+      title: 'a',
+      explanation: 'x',
+      fromSeq: null,
+      toSeq: null,
+      data: null,
+    });
+    repoDb.createFinding({
+      sessionId: session.id,
+      analyzer: 'loop',
+      severity: 'warn',
+      title: 'b',
+      explanation: 'x',
+      fromSeq: null,
+      toSeq: null,
+      data: null,
+    });
+    repoDb.createFinding({
+      sessionId: session.id,
+      analyzer: 'loop',
+      severity: 'warn',
+      title: 'c (resolved)',
+      explanation: 'x',
+      fromSeq: null,
+      toSeq: null,
+      data: null,
+    });
+    const resolved = repoDb
+      .listFindings({ sessionId: session.id })
+      .find((f) => f.title.includes('resolved'));
+    repoDb.resolveFinding((resolved as NonNullable<typeof resolved>).id);
+
+    expect(repoDb.countOpenFindingsBySeverity(session.id)).toEqual({ info: 0, warn: 1, high: 1 });
+    expect(repoDb.getFinding(high.id)?.severity).toBe('high');
+  });
+
+  test('getEventPage() returns summaries (no full payload) with a stable cursor and maxSeq', () => {
+    const session = repoDb.createSession({
+      agent: 'claude-code',
+      agentSession: null,
+      repoRoot: '/repo',
+      branch: null,
+      headBefore: null,
+      headAfter: null,
+      startedAt: 1000,
+      taskText: null,
+      tokenIn: null,
+      tokenOut: null,
+      costUsd: null,
+      source: 'hooks',
+    });
+    repoDb.appendEvents(
+      session.id,
+      Array.from({ length: 5 }, (_, i) => ({
+        sessionId: session.id,
+        ts: 1000 + i,
+        kind: 'user_turn' as const,
+        payload: { text: `turn ${i}` },
+      })),
+    );
+
+    const page1 = repoDb.getEventPage(session.id, { limit: 2 });
+    expect(page1.events).toHaveLength(2);
+    expect(page1.events[0]).not.toHaveProperty('payload');
+    expect(page1.events[0]?.summary).toBe('turn 0');
+    expect(page1.maxSeq).toBe(4);
+    expect(page1.nextFrom).toBe(2);
+
+    const page2 = repoDb.getEventPage(session.id, { fromSeq: page1.nextFrom as number, limit: 2 });
+    expect(page2.events.map((e) => e.seq)).toEqual([2, 3]);
+    expect(page2.nextFrom).toBe(4);
+
+    const page3 = repoDb.getEventPage(session.id, { fromSeq: page2.nextFrom as number, limit: 2 });
+    expect(page3.events.map((e) => e.seq)).toEqual([4]);
+    expect(page3.nextFrom).toBeNull();
+  });
+
+  test('getEvidenceRange() returns a padded window of summaries around a seq range', () => {
+    const session = repoDb.createSession({
+      agent: 'claude-code',
+      agentSession: null,
+      repoRoot: '/repo',
+      branch: null,
+      headBefore: null,
+      headAfter: null,
+      startedAt: 1000,
+      taskText: null,
+      tokenIn: null,
+      tokenOut: null,
+      costUsd: null,
+      source: 'hooks',
+    });
+    repoDb.appendEvents(
+      session.id,
+      Array.from({ length: 10 }, (_, i) => ({
+        sessionId: session.id,
+        ts: 1000 + i,
+        kind: 'user_turn' as const,
+        payload: { text: `turn ${i}` },
+      })),
+    );
+
+    const evidence = repoDb.getEvidenceRange(session.id, 5, 6, 1);
+    expect(evidence.map((e) => e.seq)).toEqual([4, 5, 6, 7]);
+
+    // padding clamps the lower bound at 0, never goes negative
+    const atStart = repoDb.getEvidenceRange(session.id, 0, 1, 3);
+    expect(atStart.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4]);
+  });
+
   test('replaceEvents() deletes prior events and re-assigns seq from 0', () => {
     const session = repoDb.createSession({
       agent: 'codex',
@@ -374,5 +549,111 @@ describe('RegistryStore', () => {
     expect(registryDb.getDaemonState('port')).toBeNull();
     registryDb.setDaemonState('port', '4711');
     expect(registryDb.getDaemonState('port')).toBe('4711');
+  });
+
+  test('upsertRepo defaults branch/gitStatus/gitCheckedAt to "not probed yet" when omitted', () => {
+    registryDb.upsertRepo({
+      repoId: 'repo-2',
+      root: '/repo2',
+      name: 'repo2',
+      agents: ['codex'],
+      registeredAt: 1000,
+      lastSeen: 1000,
+    });
+    const repo = registryDb.getRepo('repo-2');
+    expect(repo?.branch).toBeNull();
+    expect(repo?.gitStatus).toBe('unavailable');
+    expect(repo?.gitCheckedAt).toBeNull();
+  });
+
+  test('updateRepoGitState refreshes only the git-state columns, not identity fields', () => {
+    registryDb.upsertRepo({
+      repoId: 'repo-3',
+      root: '/repo3',
+      name: 'repo3',
+      agents: ['codex'],
+      registeredAt: 1000,
+      lastSeen: 1000,
+    });
+    registryDb.updateRepoGitState('repo-3', {
+      branch: 'main',
+      gitStatus: 'dirty',
+      gitCheckedAt: 5000,
+    });
+    const repo = registryDb.getRepo('repo-3');
+    expect(repo?.branch).toBe('main');
+    expect(repo?.gitStatus).toBe('dirty');
+    expect(repo?.gitCheckedAt).toBe(5000);
+    expect(repo?.name).toBe('repo3');
+  });
+
+  test('upsertSessionIndex defaults openFindingsBySeverity to all-zero when omitted', () => {
+    registryDb.upsertSessionIndex({
+      sessionId: 's-2',
+      repoId: 'repo-1',
+      agent: 'codex',
+      startedAt: 1000,
+      endedAt: null,
+      openFindings: 3,
+    });
+    expect(registryDb.listSessionIndex('repo-1')[0]?.openFindingsBySeverity).toEqual({
+      info: 0,
+      warn: 0,
+      high: 0,
+    });
+  });
+
+  test('upserts and reads back the severity breakdown', () => {
+    registryDb.upsertSessionIndex({
+      sessionId: 's-3',
+      repoId: 'repo-1',
+      agent: 'codex',
+      startedAt: 1000,
+      endedAt: null,
+      openFindings: 3,
+      openFindingsBySeverity: { info: 1, warn: 1, high: 1 },
+    });
+    expect(registryDb.listSessionIndex('repo-1')[0]?.openFindingsBySeverity).toEqual({
+      info: 1,
+      warn: 1,
+      high: 1,
+    });
+  });
+
+  test('getLatestSessionIndex returns the most recently started session for a repo', () => {
+    registryDb.upsertSessionIndex({
+      sessionId: 's-old',
+      repoId: 'repo-4',
+      agent: 'codex',
+      startedAt: 1000,
+      endedAt: 1500,
+      openFindings: 0,
+    });
+    registryDb.upsertSessionIndex({
+      sessionId: 's-new',
+      repoId: 'repo-4',
+      agent: 'claude-code',
+      startedAt: 5000,
+      endedAt: null,
+      openFindings: 0,
+    });
+    expect(registryDb.getLatestSessionIndex('repo-4')?.sessionId).toBe('s-new');
+    expect(registryDb.getLatestSessionIndex('no-such-repo')).toBeNull();
+  });
+
+  test('getFindingSparkline zero-fills 14 days and buckets by session startedAt day', () => {
+    const today = Date.now();
+    registryDb.upsertSessionIndex({
+      sessionId: 's-today',
+      repoId: 'repo-5',
+      agent: 'codex',
+      startedAt: today,
+      endedAt: null,
+      openFindings: 3,
+    });
+    const buckets = registryDb.getFindingSparkline('repo-5');
+    expect(buckets).toHaveLength(14);
+    expect(buckets.at(-1)?.count).toBe(3);
+    expect(buckets.slice(0, -1).every((b) => b.count === 0)).toBe(true);
   });
 });

@@ -8,6 +8,7 @@
     { "path": "packages/analyzers" },
     { "path": "packages/daemon" },
     { "path": "packages/cli" },
-    { "path": "packages/hook" }
+    { "path": "packages/hook" },
+    { "path": "packages/ui" }
   ]
 }

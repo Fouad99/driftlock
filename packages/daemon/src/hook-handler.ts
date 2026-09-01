@@ -2,6 +2,7 @@ import type { Adapter, AdapterOutput, HookEnvelope, Logger, RegistryStore } from
 import { noopLogger, openRepoDb, pathsEqual, repoDbPath, syncSessionIndex } from '@driftlock/core';
 import { analyzeAndStore } from './analyze-and-store.ts';
 import { applyAdapterOutput } from './apply-adapter-output.ts';
+import type { UpdateBus } from './bus.ts';
 import { generateBrief } from './generate-brief.ts';
 import type { ValidatedHookEnvelope } from './hook-envelope.ts';
 
@@ -50,6 +51,7 @@ export async function handleHookEnvelope(
   adapters: Partial<Record<HookEnvelope['agent'], Adapter>>,
   registryDb: RegistryStore,
   logger: Logger = noopLogger,
+  bus?: UpdateBus,
 ): Promise<HookHandlerResult> {
   const adapter = adapters[envelope.agent];
   if (!adapter?.onHook) {
@@ -154,11 +156,26 @@ export async function handleHookEnvelope(
       // brief's "unresolved findings" section reads this session's own
       // analysis run, not a stale pre-session_end snapshot.
       await generateBrief(sessionId, repo.root, repoDb, logger);
+      // One `finding_added` per newly-open finding (05-UI.md §4.2's SSE
+      // payload shape carries a single `findingId`) — re-reads rather than
+      // trusting `findingsCount` alone since that's just a count, not ids.
+      for (const finding of repoDb.listFindings({ sessionId, open: true })) {
+        bus?.publish({
+          type: 'finding_added',
+          repoId: repo.repoId,
+          sessionId,
+          findingId: finding.id,
+        });
+      }
     }
     for (const sessionId of result.touchedSessionIds) {
       syncSessionIndex(registryDb, repoDb, repo.repoId, sessionId);
+      bus?.publish({ type: 'session_updated', repoId: repo.repoId, sessionId });
     }
     registryDb.upsertRepo({ ...repo, lastSeen: Date.now() });
+    if (result.touchedSessionIds.size > 0) {
+      bus?.publish({ type: 'repo_updated', repoId: repo.repoId });
+    }
 
     let replyBody: Record<string, unknown> = {};
     for (const output of outputs as AdapterOutput[]) {
